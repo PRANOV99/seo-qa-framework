@@ -1,4 +1,4 @@
-import { chromium, firefox, webkit, type Browser, type BrowserType } from '@playwright/test';
+import { chromium, firefox, webkit, type Browser, type BrowserType } from 'playwright';
 import { testConfig } from '../config/test-config.js';
 import { isProduction } from '../config/env.js';
 
@@ -11,12 +11,13 @@ const browserTypes: Record<SupportedBrowserName, BrowserType> = {
 };
 
 /**
- * Extra Chromium launch flags required in constrained container environments
- * (e.g. Render's free/starter web services):
- *  - --no-sandbox: Chromium's sandbox needs kernel privileges that are
- *    unavailable in Render's containers, so launch fails without this.
+ * Extra Chromium launch flags required in the production container (the
+ * Microsoft Playwright Docker image used on Render, which runs as root):
+ *  - --no-sandbox: Chromium refuses to start as root without this, and the
+ *    kernel privileges its sandbox needs aren't available in the container
+ *    regardless.
  *  - --disable-setuid-sandbox: same reasoning, for the legacy sandbox path.
- *  - --disable-dev-shm-usage: containers ship with a very small /dev/shm
+ *  - --disable-dev-shm-usage: containers ship a very small /dev/shm
  *    (Render's free tier included), which can crash Chromium under load;
  *    this makes Chromium fall back to disk-backed temp files instead.
  * Only applied in production so local development is unaffected.

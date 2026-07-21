@@ -1,43 +1,46 @@
 services:
   - type: web
     name: seo-qa-api
-    runtime: node
-    buildCommand: npm install && npx playwright install chromium --with-deps && npm run build
-    startCommand: npm run api:start
+    runtime: docker
+    plan: free
+    # The Dockerfile lives inside the backend subfolder of this monorepo,
+    # so both paths below are pointed at seo-qa-framework/, not the repo
+    # root.
+    dockerfilePath: ./seo-qa-framework/Dockerfile
+    dockerContext: ./seo-qa-framework
+    # Render pings this path to confirm the container is actually serving
+    # traffic (not just that the process started) before routing to it.
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 3001
       - key: ALLOWED_ORIGINS
-        value: https://your-vercel-app.vercel.app
+        # Must match your Vercel frontend's real origin (no trailing slash).
+        # Update this if your Vercel URL ever changes.
+        value: https://seo-qa-framework.vercel.app
+      # UPLOAD_DIR and HISTORY_DIR both live under /tmp because Render Free
+      # web services cannot attach persistent disks — every path outside
+      # the deployed image is ephemeral and is wiped on every restart or
+      # redeploy either way, so there's no downside to being explicit about
+      # it. Uploaded audit sheets are meant to be transient regardless
+      # (deleted right after parsing). Audit *history* is genuinely lost on
+      # restart with this setup; see the note in the chat response for how
+      # to make it durable if you need that (Render Postgres, free tier
+      # available, is the natural next step — not implemented here since
+      # it's a bigger change than "make Playwright work").
       - key: UPLOAD_DIR
         value: /tmp/seo-qa-uploads
       - key: HISTORY_DIR
-        value: /opt/render/project/src/api/history
+        value: /tmp/seo-qa-history
       - key: HEADLESS
         value: "true"
       - key: LOG_LEVEL
         value: info
-      # Playwright installs browsers to ~/.cache/ms-playwright by default,
-      # which is NOT part of the deploy artifact Render carries from the
-      # build step into the runtime container. Pointing this at a path
-      # inside /opt/render/project (the project's own persistent-within-a-
-      # deploy directory) ensures the Chromium binary installed during
-      # buildCommand is still there when the app launches it at runtime.
-      # This must be set BEFORE `npx playwright install` runs in buildCommand,
-      # since Render applies env vars to both the build and run phases.
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/project/.cache/playwright
-    # NOTE: persistent disks require a paid plan — Render's Free web
-    # services cannot attach one. If you deploy this on the Free tier,
-    # remove the `disk` block below (audit history will then be ephemeral
-    # and reset on every restart/deploy) or upgrade to a paid instance type.
-    # This is unrelated to the Playwright fix above: PLAYWRIGHT_BROWSERS_PATH
-    # works on Free web services with no disk needed, since it only has to
-    # survive the build→runtime handoff within a single deploy, not across
-    # deploys or restarts.
-    disk:
-      name: history-storage
-      mountPath: /opt/render/project/src/api/history
-      sizeGB: 5
+      # No PLAYWRIGHT_BROWSERS_PATH here on purpose. The Dockerfile's base
+      # image (mcr.microsoft.com/playwright) already ships Chromium/Firefox
+      # /WebKit pre-installed and already points Playwright at them itself.
+      # Setting this env var — here or anywhere else — would override that
+      # and point Playwright at an empty directory, reintroducing the
+      # "Executable doesn't exist" error this whole file exists to avoid.

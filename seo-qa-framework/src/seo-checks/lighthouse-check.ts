@@ -1,4 +1,4 @@
-import { chromium } from '@playwright/test';
+import { chromium } from 'playwright';
 import * as chromeLauncher from 'chrome-launcher';
 import lighthouse from 'lighthouse';
 import type { LighthouseCheckResult, LighthouseScores } from '../types/lighthouse-result.js';
@@ -18,8 +18,9 @@ export class LighthouseChecker {
           '--headless=new',
           '--no-sandbox',
           '--disable-gpu',
-          // Render's free/starter containers ship a very small /dev/shm,
-          // which can crash Chromium mid-audit without this flag.
+          // Render's production container runs as root (Playwright's official
+          // Docker image) and has a very small /dev/shm; both make this flag
+          // necessary to avoid a mid-audit crash.
           ...(isProduction ? ['--disable-dev-shm-usage'] : [])
         ]
       });
