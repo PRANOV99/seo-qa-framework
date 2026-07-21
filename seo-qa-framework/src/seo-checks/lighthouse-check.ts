@@ -3,6 +3,7 @@ import * as chromeLauncher from 'chrome-launcher';
 import lighthouse from 'lighthouse';
 import type { LighthouseCheckResult, LighthouseScores } from '../types/lighthouse-result.js';
 import { logger } from '../logger/logger.js';
+import { isProduction } from '../config/env.js';
 
 const LIGHTHOUSE_CATEGORIES = ['performance', 'accessibility', 'best-practices', 'seo'];
 
@@ -13,7 +14,14 @@ export class LighthouseChecker {
     try {
       chrome = await chromeLauncher.launch({
         chromePath: chromium.executablePath(),
-        chromeFlags: ['--headless=new', '--no-sandbox', '--disable-gpu']
+        chromeFlags: [
+          '--headless=new',
+          '--no-sandbox',
+          '--disable-gpu',
+          // Render's free/starter containers ship a very small /dev/shm,
+          // which can crash Chromium mid-audit without this flag.
+          ...(isProduction ? ['--disable-dev-shm-usage'] : [])
+        ]
       });
 
       const runnerResult = await lighthouse(url, {

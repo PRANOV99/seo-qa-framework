@@ -19,6 +19,24 @@ services:
         value: "true"
       - key: LOG_LEVEL
         value: info
+      # Playwright installs browsers to ~/.cache/ms-playwright by default,
+      # which is NOT part of the deploy artifact Render carries from the
+      # build step into the runtime container. Pointing this at a path
+      # inside /opt/render/project (the project's own persistent-within-a-
+      # deploy directory) ensures the Chromium binary installed during
+      # buildCommand is still there when the app launches it at runtime.
+      # This must be set BEFORE `npx playwright install` runs in buildCommand,
+      # since Render applies env vars to both the build and run phases.
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/.cache/playwright
+    # NOTE: persistent disks require a paid plan — Render's Free web
+    # services cannot attach one. If you deploy this on the Free tier,
+    # remove the `disk` block below (audit history will then be ephemeral
+    # and reset on every restart/deploy) or upgrade to a paid instance type.
+    # This is unrelated to the Playwright fix above: PLAYWRIGHT_BROWSERS_PATH
+    # works on Free web services with no disk needed, since it only has to
+    # survive the build→runtime handoff within a single deploy, not across
+    # deploys or restarts.
     disk:
       name: history-storage
       mountPath: /opt/render/project/src/api/history

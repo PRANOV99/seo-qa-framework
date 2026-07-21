@@ -21,3 +21,10 @@ const envSchema = z.object({
 export const env = envSchema.parse(process.env);
 
 export type Env = typeof env;
+
+/**
+ * True when running in a production deployment (e.g. Render).
+ * Used to apply container-safe browser launch flags without changing
+ * local development behavior.
+ */
+export const isProduction = process.env.NODE_ENV === 'production';
