@@ -1,0 +1,12 @@
+node_modules/
+/dist/
+.env
+/playwright-report/
+/test-results/
+/reports/
+/screenshots/
+/logs/
+*.log
+/history/
+/api/uploads/
+/api/history/

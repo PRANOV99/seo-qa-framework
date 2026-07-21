@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: seo-qa-api
+    runtime: node
+    buildCommand: npm install && npx playwright install chromium --with-deps && npm run build
+    startCommand: npm run api:start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: ALLOWED_ORIGINS
+        value: https://your-vercel-app.vercel.app
+      - key: UPLOAD_DIR
+        value: /tmp/seo-qa-uploads
+      - key: HISTORY_DIR
+        value: /opt/render/project/src/api/history
+      - key: HEADLESS
+        value: "true"
+      - key: LOG_LEVEL
+        value: info
+    disk:
+      name: history-storage
+      mountPath: /opt/render/project/src/api/history
+      sizeGB: 5
