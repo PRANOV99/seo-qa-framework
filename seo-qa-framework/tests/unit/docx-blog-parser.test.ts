@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { strToU8, zipSync } from 'fflate';
-import { parseBlogDocx, htmlToText, decodeHtmlEntities } from '../../src/blog/docx-blog-parser.js';
+import { parseBlogDocx, htmlToText, decodeHtmlEntities, isDividerOnly } from '../../src/blog/docx-blog-parser.js';
 
 describe('parseBlogDocx', () => {
   it('extracts title (H1), H2s, H3s, body paragraphs, labeled Meta Title/Description paragraphs, hyperlinks, and bold phrases', async () => {
@@ -140,6 +140,59 @@ describe('parseBlogDocx', () => {
     assert.deepEqual(content.paragraphs, ['This is a well-known, state-of-the-art approach to baking.']);
   });
 
+  it('ignores a divider line even when it contains a hidden zero-width space in the middle', async () => {
+    // Regression: a single invisible character (invisible to whoever wrote
+    // the document) used to defeat the plain character-class match entirely,
+    // letting the whole line — quotes and all — leak through as a paragraph.
+    const docxPath = await writeBlogDocx('divider-with-zwsp.docx', [
+      heading(1, 'My Post'),
+      paragraph('----------​----------'),
+      paragraph('The only real paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The only real paragraph.'],
+      `Got: ${JSON.stringify(content.paragraphs)}`);
+  });
+
+  it('ignores a divider line wrapped in straight quotation marks', async () => {
+    const docxPath = await writeBlogDocx('divider-in-quotes.docx', [
+      heading(1, 'My Post'),
+      paragraph('"---------------------------------------------"'),
+      paragraph('The only real paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The only real paragraph.']);
+  });
+
+  it('ignores a divider line built from Unicode dash variants (en dash, em dash) instead of a plain hyphen', async () => {
+    const docxPath = await writeBlogDocx('divider-unicode-dashes.docx', [
+      heading(1, 'My Post'),
+      paragraph('————————————————————'), // em dash (U+2014)
+      paragraph('––––––––––––––––––––'), // en dash (U+2013)
+      paragraph('The only real paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The only real paragraph.']);
+  });
+
+  it('ignores a paragraph that is entirely non-breaking spaces / zero-width characters and nothing else', async () => {
+    const docxPath = await writeBlogDocx('invisible-only.docx', [
+      heading(1, 'My Post'),
+      paragraph(' ​‌‍﻿'),
+      paragraph('The only real paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The only real paragraph.']);
+  });
+
   it('captures "SEO Slug:" into expectedSlug', async () => {
     const docxPath = await writeBlogDocx('slug-label.docx', [
       heading(1, 'My Post'),
@@ -262,6 +315,83 @@ describe('decodeHtmlEntities', () => {
 
   it('decodes a straight-apostrophe numeric entity (&#39;) the same as before', () => {
     assert.equal(decodeHtmlEntities('It&#39;s fine'), "It's fine");
+  });
+});
+
+// ── isDividerOnly ────────────────────────────────────────────────────────────────
+//
+// Direct, exhaustive tests of the divider detector itself — the same
+// scenarios below are also exercised end-to-end through parseBlogDocx in the
+// "ignores decorative divider lines" tests above, but testing the exported
+// function directly makes every hidden-character edge case explicit and fast.
+
+describe('isDividerOnly', () => {
+  it('detects plain ASCII dividers of any length', () => {
+    assert.equal(isDividerOnly('------------------------------------'), true);
+    assert.equal(isDividerOnly('____________________________________'), true);
+    assert.equal(isDividerOnly('===================================='), true);
+    assert.equal(isDividerOnly('************************************'), true);
+    assert.equal(isDividerOnly('~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~'), true);
+    assert.equal(isDividerOnly('----------'), true);
+    assert.equal(isDividerOnly('______'), true);
+  });
+
+  it('detects a divider with leading/trailing whitespace', () => {
+    assert.equal(isDividerOnly('   ------------------------------------   '), true);
+  });
+
+  it('detects a divider wrapped in straight or curly quotation marks', () => {
+    assert.equal(isDividerOnly('"----------"'), true);
+    assert.equal(isDividerOnly("'----------'"), true);
+    assert.equal(isDividerOnly('“----------”'), true);
+    assert.equal(isDividerOnly('‘----------’'), true);
+  });
+
+  it('detects a divider containing a non-breaking space (U+00A0)', () => {
+    assert.equal(isDividerOnly('----- -----'), true);
+    assert.equal(isDividerOnly(' ------------ '), true);
+  });
+
+  it('detects a divider containing zero-width characters (ZWSP, ZWNJ, ZWJ, word joiner, BOM)', () => {
+    assert.equal(isDividerOnly('-----​-----'), true, 'zero-width space');
+    assert.equal(isDividerOnly('-----‌-----'), true, 'zero-width non-joiner');
+    assert.equal(isDividerOnly('-----‍-----'), true, 'zero-width joiner');
+    assert.equal(isDividerOnly('-----⁠-----'), true, 'word joiner');
+    assert.equal(isDividerOnly('-----﻿-----'), true, 'zero-width no-break space / BOM');
+  });
+
+  it('detects a paragraph that is nothing but hidden/invisible characters', () => {
+    assert.equal(isDividerOnly('​‌‍﻿'), true);
+    assert.equal(isDividerOnly('   '), true);
+  });
+
+  it('detects dividers built from Unicode dash variants, not just the ASCII hyphen', () => {
+    assert.equal(isDividerOnly('‐‐‐‐‐'), true, 'HYPHEN');
+    assert.equal(isDividerOnly('‑‑‑‑‑'), true, 'NON-BREAKING HYPHEN');
+    assert.equal(isDividerOnly('‒‒‒‒‒'), true, 'FIGURE DASH');
+    assert.equal(isDividerOnly('–––––'), true, 'EN DASH');
+    assert.equal(isDividerOnly('—————'), true, 'EM DASH');
+    assert.equal(isDividerOnly('―――――'), true, 'HORIZONTAL BAR');
+    assert.equal(isDividerOnly('−−−−−'), true, 'MINUS SIGN');
+  });
+
+  it('detects a divider mixing several different divider characters together', () => {
+    assert.equal(isDividerOnly('--==__~~||'), true);
+    assert.equal(isDividerOnly('-=*_~-=*_~'), true);
+  });
+
+  it('detects a divider combining several edge cases at once (mixed chars + quotes + NBSP + zero-width + surrounding whitespace)', () => {
+    assert.equal(isDividerOnly('  "--== __​~~"  '), true);
+  });
+
+  it('does NOT flag real content as a divider', () => {
+    assert.equal(isDividerOnly('hello'), false);
+    assert.equal(isDividerOnly('This is a well-known, state-of-the-art approach to baking.'), false);
+    assert.equal(isDividerOnly('3 - 2 = 1'), false, 'contains real digits, not just divider characters');
+  });
+
+  it('does NOT flag real content that merely contains a hidden character somewhere in it', () => {
+    assert.equal(isDividerOnly('Hello​world'), false);
   });
 });
 

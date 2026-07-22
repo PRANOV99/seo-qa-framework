@@ -13,12 +13,48 @@ const SLUG_LABEL      = /^(?:seo\s*slug|slug|permalink|url)\s*[:-]\s*(.*)$/i;
 // Metadata-only fields that must be stripped from the body paragraph list
 const METADATA_LABEL = /^(?:seo\s*slug|slug|canonical|redirect|author|category|tags?|published|date|focus\s*keyword|primary\s*keyword|schema|robots|noindex|url|permalink|alt\s*text)\s*[:-]/i;
 
+// Zero-width / invisible characters that render as nothing: zero-width
+// space/non-joiner/joiner, word joiner, the Mongolian vowel separator, and
+// the zero-width no-break space (BOM used mid-text). A paragraph consisting
+// only of these (plus whitespace) carries no visible content at all, so they
+// are stripped entirely before testing whether a line is a divider — a
+// single stray zero-width character would otherwise defeat a plain
+// character-class match against an otherwise all-dashes line.
+// Each code point is an intentional literal member of the class (incl. the
+// zero-width joiner U+200D itself), not an accidental combining/joiner
+// sequence — hence the lint disable below.
+// eslint-disable-next-line no-misleading-character-class
+const INVISIBLE_CHARS = new RegExp('[\\u200B\\u200C\\u200D\\u2060\\u180E\\uFEFF]', 'g');
+
 // Decorative separator/divider lines content writers place before metadata
 // sections (e.g. "------", "______", "======", "******", "~~~~~~~~~~~~") —
-// any length, never real content. Matched whenever the ENTIRE trimmed
-// paragraph consists solely of these characters (whitespace included, so a
-// divider surrounded by stray spaces is still recognised).
-const FORMATTING_ONLY = /^[-=*_~|\s]+$/;
+// any length, never real content, any mix of these characters. Includes the
+// common Unicode dash variants (en/em dash, minus sign, etc.) in case Word's
+// autocorrect or a copy-paste substitutes one, and straight/curly quote
+// marks, since a divider is sometimes typed or pasted wrapped in quotes.
+// Matched whenever the ENTIRE trimmed paragraph (after stripping invisible
+// characters) consists solely of these characters, including whitespace, so
+// a divider surrounded by stray spaces is still recognised.
+const DIVIDER_CHARS =
+  '\\-=*_~|"\'' +
+  '\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212\\uFE58\\uFE63\\uFF0D' + // Unicode dash variants
+  '\\u2018\\u2019\\u201A\\u201B\\u201C\\u201D\\u201E\\u201F' +               // curly quote variants
+  '\\s';
+const DIVIDER_ONLY = new RegExp(`^[${DIVIDER_CHARS}]+$`);
+
+/**
+ * Detects a paragraph that is nothing but a decorative divider — or nothing
+ * but invisible characters — so it never leaks through as fake blog content.
+ * Hidden characters are stripped before testing since they're invisible to
+ * whoever wrote the document and would otherwise silently defeat the
+ * character-class match (e.g. a lone zero-width space hiding among a line
+ * of dashes). Exported for direct unit testing.
+ */
+export function isDividerOnly(rawText: string): boolean {
+  const visible = rawText.replace(INVISIBLE_CHARS, '');
+  if (visible.trim() === '') return true;
+  return DIVIDER_ONLY.test(visible);
+}
 
 interface Block {
   tag: 'h1' | 'h2' | 'h3' | 'p' | 'table';
@@ -68,8 +104,8 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
 
     if (!text) continue;
 
-    // Skip labeled metadata fields (already captured) and pure formatting lines
-    if (isAnyLabeledField(text) || FORMATTING_ONLY.test(text)) continue;
+    // Skip labeled metadata fields (already captured) and decorative divider lines
+    if (isAnyLabeledField(text) || isDividerOnly(text)) continue;
 
     if (block.tag === 'h1') {
       title = title ?? text;
