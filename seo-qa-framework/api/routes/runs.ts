@@ -4,10 +4,16 @@ import { unlink } from 'node:fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { upload } from '../middleware/upload.js';
 import { saveAuditRecord, getAuditRecord } from '../history-store.js';
+import {
+  createBatch, getBatch, markItemRunning, markItemSettled, markBatchAborted
+} from '../batch-store.js';
 import { AuditRunner } from '../../src/runner/audit-runner.js';
 import { BlogAuditRunner } from '../../src/runner/blog-audit-runner.js';
+import { BlogBatchRunner, type BlogBatchItem } from '../../src/runner/blog-batch-runner.js';
 import { buildReportData } from '../../src/reports/report-data-builder.js';
 import { createAuditSheetParser } from '../../src/parsers/parser-factory.js';
+import { normalizeUrl } from '../../src/blog/url-normalizer.js';
+import { testConfig } from '../../src/config/test-config.js';
 import { logger } from '../../src/logger/logger.js';
 
 const router = Router();
@@ -178,6 +184,201 @@ router.post(
     }
   }
 );
+
+// ── Blog Testing batch ─────────────────────────────────────────────────────────
+//
+// Batch mode orchestrates multiple existing single-blog audits — it reuses
+// BlogAuditRunner/buildReportData/saveAuditRecord exactly as-is via
+// BlogBatchRunner, so every blog in a batch is saved and viewable through the
+// same history/results plumbing as any other blog audit. Nothing here
+// changes the single-blog report structure; it only adds a thin sequential
+// orchestration layer and a lightweight combined summary on top.
+
+/** GET /api/runs/batch/config — exposes the server-configured batch size limit so the UI never hardcodes it. */
+router.get('/batch/config', (_req: Request, res: Response) => {
+  res.json({ maxBatchSize: testConfig.maxBlogBatchSize });
+});
+
+/**
+ * POST /api/runs/batch
+ * Form fields:
+ *   files  required  up to `maxBlogBatchSize` .docx files
+ *   urls   required  JSON array of live URLs, same order/count as `files`
+ * Responds immediately with { batchId, total } and processes the batch
+ * sequentially in the background — poll GET /api/runs/batch/:id for progress.
+ */
+router.post(
+  '/batch',
+  upload.array('files', testConfig.maxBlogBatchSize),
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async (req: Request, res: Response, _next: NextFunction) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    if (files.length === 0) {
+      res.status(400).json({ error: 'At least one blog document is required.' });
+      return;
+    }
+
+    const nonDocx = files.filter((f) => path.extname(f.originalname).toLowerCase() !== '.docx');
+    if (nonDocx.length > 0) {
+      await Promise.all(files.map((f) => safeDelete(f.path)));
+      res.status(400).json({
+        error: `Blog Testing only accepts .docx files. Invalid file(s): ${nonDocx.map((f) => f.originalname).join(', ')}`
+      });
+      return;
+    }
+
+    let urls: string[];
+    try {
+      const parsed: unknown = JSON.parse(String(req.body.urls ?? '[]'));
+      urls = Array.isArray(parsed) ? (parsed as unknown[]).map(String) : [];
+    } catch {
+      urls = [];
+    }
+
+    if (urls.length !== files.length) {
+      await Promise.all(files.map((f) => safeDelete(f.path)));
+      res.status(400).json({
+        error: `Expected one live URL per blog document (${files.length}), but received ${urls.length}.`
+      });
+      return;
+    }
+
+    if (urls.some((u) => !u.trim())) {
+      await Promise.all(files.map((f) => safeDelete(f.path)));
+      res.status(400).json({ error: 'A live URL is required for every blog document.' });
+      return;
+    }
+
+    // Duplicate URL validation — normalised so tracking-param / trailing-slash
+    // variants of the same page are also caught, not just exact string matches.
+    const trimmedUrls = urls.map((u) => u.trim());
+    const seenNormalized = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const u of trimmedUrls) {
+      const normalized = normalizeUrl(u, u);
+      if (seenNormalized.has(normalized)) duplicates.add(u);
+      seenNormalized.add(normalized);
+    }
+    if (duplicates.size > 0) {
+      await Promise.all(files.map((f) => safeDelete(f.path)));
+      res.status(400).json({
+        error: `Duplicate live URL(s) in this batch: ${[...duplicates].join(', ')}. Each blog must have a unique URL.`
+      });
+      return;
+    }
+
+    if (files.length > testConfig.maxBlogBatchSize) {
+      await Promise.all(files.map((f) => safeDelete(f.path)));
+      res.status(400).json({ error: `A batch can contain at most ${testConfig.maxBlogBatchSize} blog documents.` });
+      return;
+    }
+
+    const items: BlogBatchItem[] = files.map((file, i) => ({
+      docxPath: file.path,
+      url: trimmedUrls[i]!,
+      filename: file.originalname
+    }));
+
+    const batchId = uuidv4();
+    createBatch(batchId, items.map(({ filename, url }) => ({ filename, url })));
+
+    res.json({ batchId, total: items.length });
+
+    void processBlogBatch(batchId, items);
+  }
+);
+
+/** GET /api/runs/batch/:id — progress/status for polling. */
+router.get('/batch/:id', (req: Request, res: Response) => {
+  const batch = getBatch(String(req.params['id'] ?? ''));
+  if (!batch) {
+    res.status(404).json({ error: 'Batch not found.' });
+    return;
+  }
+  res.json(batch);
+});
+
+/** GET /api/runs/batch/:id/download — combined summary across every blog in the batch (individual reports still use GET /api/history/:id?download=1). */
+router.get('/batch/:id/download', (req: Request, res: Response) => {
+  const batch = getBatch(String(req.params['id'] ?? ''));
+  if (!batch) {
+    res.status(404).json({ error: 'Batch not found.' });
+    return;
+  }
+
+  const passed = batch.items.filter((i) => i.status === 'done' && (i.summary?.['blogContent'] as { failed?: number } | undefined)?.failed === 0).length;
+  const failed = batch.items.filter((i) => i.status === 'done' && ((i.summary?.['blogContent'] as { failed?: number } | undefined)?.failed ?? 0) > 0).length;
+  const errored = batch.items.filter((i) => i.status === 'error').length;
+  const totalMismatches = batch.items.reduce(
+    (sum, i) => sum + ((i.summary?.['blogContent'] as { failed?: number } | undefined)?.failed ?? 0),
+    0
+  );
+
+  const combined = {
+    batchId: batch.id,
+    createdAt: batch.createdAt,
+    totalBlogs: batch.total,
+    passed,
+    failed,
+    errored,
+    totalMismatches,
+    blogs: batch.items.map((i) => ({
+      filename: i.filename,
+      url: i.url,
+      status: i.status,
+      auditId: i.auditId,
+      summary: i.summary,
+      error: i.error
+    }))
+  };
+
+  const slug = `batch-${batch.id}`.slice(0, 60);
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}.json"`);
+  res.setHeader('Content-Type', 'application/json');
+  res.json(combined);
+});
+
+/** Runs a Blog Testing batch sequentially in the background, persisting each blog exactly like a normal single blog audit. */
+async function processBlogBatch(batchId: string, items: BlogBatchItem[]): Promise<void> {
+  try {
+    const runner = new BlogBatchRunner();
+    await runner.run(items, {
+      onStart: (index) => {
+        markItemRunning(batchId, index);
+      },
+      onComplete: async (index, _total, item, itemResult) => {
+        if (itemResult.status === 'done' && itemResult.result) {
+          const reportData = buildReportData(itemResult.result);
+          const auditId = uuidv4();
+          await saveAuditRecord({
+            id: auditId,
+            type: 'blog',
+            filename: item.filename,
+            url: item.url,
+            createdAt: itemResult.result.startedAt,
+            status: 'completed',
+            summary: reportData.summary as unknown as Record<string, unknown>,
+            report: reportData as unknown as Record<string, unknown>
+          });
+          markItemSettled(batchId, index, {
+            status: 'done',
+            auditId,
+            summary: reportData.summary as unknown as Record<string, unknown>
+          });
+        } else {
+          markItemSettled(batchId, index, { status: 'error', error: itemResult.error ?? 'Unknown error.' });
+        }
+        await safeDelete(item.docxPath);
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('[runs] Blog batch aborted unexpectedly.', { batchId, message });
+    markBatchAborted(batchId, message);
+    await Promise.all(items.map((item) => safeDelete(item.docxPath)));
+  }
+}
 
 // ── GET /api/runs/:id ─────────────────────────────────────────────────────────
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {

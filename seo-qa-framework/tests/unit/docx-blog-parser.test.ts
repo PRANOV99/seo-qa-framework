@@ -85,6 +85,70 @@ describe('parseBlogDocx', () => {
     assert.deepEqual(content.paragraphs, ['The real first article paragraph.'],
       'Metadata-only paragraphs must not appear in paragraphs[].');
   });
+
+  it('captures "SEO Slug:" into expectedSlug', async () => {
+    const docxPath = await writeBlogDocx('slug-label.docx', [
+      heading(1, 'My Post'),
+      paragraph('SEO Slug: my-post-slug'),
+      paragraph('The real first article paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedSlug, 'my-post-slug');
+  });
+
+  it('also recognizes "Slug:", "Permalink:", and "URL:" as slug labels', async () => {
+    for (const label of ['Slug', 'Permalink', 'URL']) {
+      const docxPath = await writeBlogDocx(`slug-label-${label}.docx`, [
+        heading(1, 'My Post'),
+        paragraph(`${label}: /blog/my-post`)
+      ]);
+
+      const content = await parseBlogDocx(docxPath);
+      assert.equal(content.expectedSlug, '/blog/my-post', `Label "${label}:" should populate expectedSlug`);
+    }
+  });
+
+  it('captures "Canonical:" into expectedCanonicalUrl', async () => {
+    const docxPath = await writeBlogDocx('canonical-label.docx', [
+      heading(1, 'My Post'),
+      paragraph('Canonical: https://example.com/blog/pillar-page'),
+      paragraph('The real first article paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/blog/pillar-page');
+  });
+
+  it('leaves expectedSlug/expectedCanonicalUrl undefined when no such labels are present', async () => {
+    const docxPath = await writeBlogDocx('no-url-labels.docx', [
+      heading(1, 'My Post'),
+      paragraph('Just a regular paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedSlug, undefined);
+    assert.equal(content.expectedCanonicalUrl, undefined);
+  });
+
+  it('extracts Canonical/Slug from a 2-column content-brief table', async () => {
+    const docxPath = await writeBlogDocx('table-url-fields.docx', [
+      table([
+        ['Meta Title', 'Table-Based Title | Example'],
+        ['Canonical', 'https://example.com/blog/table-canonical'],
+        ['Slug', 'table-based-slug']
+      ]),
+      paragraph('This is the only body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/blog/table-canonical');
+    assert.equal(content.expectedSlug, 'table-based-slug');
+  });
 });
 
 describe('parseBlogDocx — hyperlink extraction', () => {

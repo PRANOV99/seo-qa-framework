@@ -28,6 +28,7 @@ test.describe('BlogAuditRunner', () => {
             <head>
               <title>How to Bake Sourdough Bread | Example Blog</title>
               <meta name="description" content="Learn how to bake sourdough bread at home with this step-by-step guide.">
+              <link rel="canonical" href="${baseUrl}/blog/matching">
             </head>
             <body>
               <article>
@@ -72,6 +73,7 @@ test.describe('BlogAuditRunner', () => {
     const docxPath = await writeBlogDocx('matching.docx', [
       paragraph('Meta Title: How to Bake Sourdough Bread | Example Blog'),
       paragraph('Meta Description: Learn how to bake sourdough bread at home with this step-by-step guide.'),
+      paragraph('SEO Slug: matching'),
       heading(1, 'How to Bake Sourdough Bread'),
       paragraph('This is the introduction paragraph.'),
       heading(2, 'Ingredients'),
@@ -106,7 +108,8 @@ test.describe('BlogAuditRunner', () => {
 
       const metaTitleResult = result.seoCheckResults.find((check) => check.checkType === 'Meta Title');
       const missingHeading = result.seoCheckResults.find((check) => check.checkType === 'H2 #1');
-      const paragraphResult = result.seoCheckResults.find((check) => check.checkType === 'Body Paragraph #1');
+      // Paragraph checks are labeled with a quoted preview of their text, not "Body Paragraph #N" — see compareParagraphs.
+      const paragraphResult = result.seoCheckResults.find((check) => check.expected === 'This is the introduction paragraph.');
 
       expect(metaTitleResult?.status).toBe('failed');
       expect(missingHeading?.status).toBe('failed');

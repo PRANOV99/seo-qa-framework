@@ -15,7 +15,9 @@ const envSchema = z.object({
   NAVIGATION_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   HEADLESS: z.coerce.boolean().default(true),
   VIEWPORT_WIDTH: z.coerce.number().int().positive().default(1440),
-  VIEWPORT_HEIGHT: z.coerce.number().int().positive().default(900)
+  VIEWPORT_HEIGHT: z.coerce.number().int().positive().default(900),
+  /** Max number of blog documents that can be submitted together in one Blog Testing batch (web API). */
+  MAX_BLOG_BATCH_SIZE: z.coerce.number().int().positive().default(5)
 });
 
 export const env = envSchema.parse(process.env);

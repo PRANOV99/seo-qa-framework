@@ -130,6 +130,57 @@ export function downloadUrl(id: string): string {
   return `${API_BASE}/history/${encodeURIComponent(id)}?download=1`;
 }
 
+// ── Blog Testing batch ───────────────────────────────────────────────────────────
+export interface BatchConfig {
+  maxBatchSize: number;
+}
+
+export async function getBatchConfig(): Promise<BatchConfig> {
+  return request<BatchConfig>('/runs/batch/config');
+}
+
+export interface BatchItemStatus {
+  index: number;
+  filename: string;
+  url: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  auditId?: string;
+  summary?: AuditSummary;
+  error?: string;
+}
+
+export interface BatchStatus {
+  id: string;
+  total: number;
+  completed: number;
+  currentIndex: number | null;
+  currentFilename: string | null;
+  status: 'running' | 'done';
+  createdAt: string;
+  items: BatchItemStatus[];
+}
+
+export async function postBlogBatch(files: File[], urls: string[]): Promise<{ batchId: string; total: number }> {
+  const fd = new FormData();
+  files.forEach(f => fd.append('files', f));
+  fd.append('urls', JSON.stringify(urls));
+
+  const res = await fetch(`${API_BASE}/runs/batch`, { method: 'POST', body: fd });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<{ batchId: string; total: number }>;
+}
+
+export async function getBatchStatus(batchId: string): Promise<BatchStatus> {
+  return request<BatchStatus>(`/runs/batch/${encodeURIComponent(batchId)}`);
+}
+
+export function combinedBatchDownloadUrl(batchId: string): string {
+  return `${API_BASE}/runs/batch/${encodeURIComponent(batchId)}/download`;
+}
+
 // ── Shared types (mirrors backend ReportData shape) ───────────────────────────
 export interface AuditSummary {
   sourcePath: string;

@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import Home from './pages/Home';
 import Upload from './pages/Upload';
 import Results from './pages/Results';
+import BatchResults from './pages/BatchResults';
 import History from './pages/History';
 import HistoryDetail from './pages/HistoryDetail';
 import Compare from './pages/Compare';
@@ -16,6 +17,7 @@ export default function App() {
           <Route index element={<Home />} />
           <Route path="upload" element={<Upload />} />
           <Route path="results/:id" element={<Results />} />
+          <Route path="results/batch/:batchId" element={<BatchResults />} />
           <Route path="history" element={<History />} />
           <Route path="history/:id" element={<HistoryDetail />} />
           <Route path="compare" element={<Compare />} />

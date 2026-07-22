@@ -33,11 +33,19 @@ const baseExpected: BlogContent = {
     makeLink('sourdough starter guide', 'https://example.com/guides/starter'),
     makeLink('Dutch oven recommendations', 'https://example.com/tools/dutch-oven')
   ],
-  boldPhrases: ['sourdough starter', 'Dutch oven']
+  boldPhrases: ['sourdough starter', 'Dutch oven'],
+  // Matches the last path segment of BASE_URL ("/blog/sourdough") so the
+  // "exact match" fixture below represents a fully-passing blog by default.
+  expectedSlug: 'sourdough'
 };
 
 function exactMatch(content: BlogContent): BlogContent {
-  return JSON.parse(JSON.stringify(content)) as BlogContent;
+  const clone = JSON.parse(JSON.stringify(content)) as BlogContent;
+  // Live-page-only field: default every "actual" fixture to a self-referencing
+  // canonical so tests that assert "everything passes" remain accurate without
+  // having to repeat this on every call site.
+  clone.canonicalUrl = clone.canonicalUrl ?? normalizeUrl(BASE_URL, BASE_URL);
+  return clone;
 }
 
 // ── Core SEO field comparisons ─────────────────────────────────────────────────
@@ -102,6 +110,105 @@ describe('compareBlogContent — metadata', () => {
     const metaDescResult = results.find((r) => r.checkType === 'Meta Description');
 
     assert.equal(metaDescResult?.status, 'skipped');
+  });
+});
+
+// ── Canonical URL comparisons ───────────────────────────────────────────────────
+
+describe('compareBlogContent — canonical URL', () => {
+  it('passes when the live canonical self-references the audited URL', () => {
+    const results    = compareBlogContent(BASE_URL, baseExpected, exactMatch(baseExpected));
+    const canonical  = results.find((r) => r.checkType === 'Canonical URL');
+
+    assert.equal(canonical?.status, 'passed');
+  });
+
+  it('fails when the canonical tag is missing from the live page', () => {
+    const actual = exactMatch(baseExpected);
+    actual.canonicalUrl = undefined;
+
+    const results   = compareBlogContent(BASE_URL, baseExpected, actual);
+    const canonical = results.find((r) => r.checkType === 'Canonical URL');
+
+    assert.equal(canonical?.status, 'failed');
+    assert.match(canonical?.message ?? '', /missing/);
+  });
+
+  it('fails when the canonical points to a different URL than the one audited', () => {
+    const actual = exactMatch(baseExpected);
+    actual.canonicalUrl = 'https://example.com/blog/some-other-post';
+
+    const results   = compareBlogContent(BASE_URL, baseExpected, actual);
+    const canonical = results.find((r) => r.checkType === 'Canonical URL');
+
+    assert.equal(canonical?.status, 'failed');
+    assert.match(canonical?.message ?? '', /does not match/);
+  });
+
+  it('passes against a docx "Canonical:" override instead of the audited URL', () => {
+    const expected = exactMatch(baseExpected);
+    expected.expectedCanonicalUrl = 'https://example.com/blog/pillar-page';
+
+    const actual = exactMatch(baseExpected);
+    actual.canonicalUrl = 'https://example.com/blog/pillar-page';
+
+    const results   = compareBlogContent(BASE_URL, expected, actual);
+    const canonical = results.find((r) => r.checkType === 'Canonical URL');
+
+    assert.equal(canonical?.status, 'passed');
+  });
+
+  it('tolerates a tracking-parameter variant of the same canonical URL', () => {
+    const actual = exactMatch(baseExpected);
+    actual.canonicalUrl = `${BASE_URL}?utm_source=newsletter`;
+
+    const results   = compareBlogContent(BASE_URL, baseExpected, actual);
+    const canonical = results.find((r) => r.checkType === 'Canonical URL');
+
+    assert.equal(canonical?.status, 'passed');
+  });
+});
+
+// ── Blog URL / slug comparisons ─────────────────────────────────────────────────
+
+describe('compareBlogContent — URL / slug', () => {
+  it('passes when the live URL path matches the expected slug', () => {
+    const results = compareBlogContent(BASE_URL, baseExpected, exactMatch(baseExpected));
+    const slug    = results.find((r) => r.checkType === 'Blog URL / Slug');
+
+    assert.equal(slug?.status, 'passed');
+  });
+
+  it('is skipped when the approved document specifies no expected slug', () => {
+    const expected = exactMatch(baseExpected);
+    expected.expectedSlug = undefined;
+
+    const results = compareBlogContent(BASE_URL, expected, exactMatch(baseExpected));
+    const slug    = results.find((r) => r.checkType === 'Blog URL / Slug');
+
+    assert.equal(slug?.status, 'skipped');
+  });
+
+  it('fails when the live URL does not contain the expected slug', () => {
+    const results = compareBlogContent(
+      'https://example.com/blog/a-completely-different-post',
+      baseExpected,
+      exactMatch(baseExpected)
+    );
+    const slug = results.find((r) => r.checkType === 'Blog URL / Slug');
+
+    assert.equal(slug?.status, 'failed');
+    assert.match(slug?.message ?? '', /does not match the expected slug/);
+  });
+
+  it('accepts a full-path expected slug ("/blog/sourdough") as well as a bare slug', () => {
+    const expected = exactMatch(baseExpected);
+    expected.expectedSlug = '/blog/sourdough';
+
+    const results = compareBlogContent(BASE_URL, expected, exactMatch(baseExpected));
+    const slug    = results.find((r) => r.checkType === 'Blog URL / Slug');
+
+    assert.equal(slug?.status, 'passed');
   });
 });
 

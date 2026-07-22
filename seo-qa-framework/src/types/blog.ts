@@ -33,6 +33,26 @@ export interface BlogContent {
    */
   twitterTitle?: string;
   twitterDescription?: string;
+  /**
+   * The `<link rel="canonical">` href resolved to an absolute URL.
+   * Only populated by the live-page extractor (`extractLiveBlogContent`) —
+   * the docx side has no canonical tag of its own, only an optional
+   * `expectedCanonicalUrl` override (below).
+   */
+  canonicalUrl?: string;
+  /**
+   * Optional canonical URL override from a "Canonical: …" labeled line in
+   * the approved document. When absent, the canonical check falls back to
+   * expecting the live page to self-reference the audited URL. Only
+   * populated by the docx extractor.
+   */
+  expectedCanonicalUrl?: string;
+  /**
+   * Optional expected URL slug/path from a "SEO Slug:" / "Slug:" /
+   * "Permalink:" / "URL:" labeled line in the approved document. Only
+   * populated by the docx extractor.
+   */
+  expectedSlug?: string;
 }
 
 export interface BlogComparisonSummary {

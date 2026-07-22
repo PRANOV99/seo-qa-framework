@@ -7,6 +7,8 @@ import { normalizeUrl } from './url-normalizer.js';
 const META_TITLE_LABEL       = /^meta\s*title\s*[:-]\s*(.*)$/i;
 const META_DESCRIPTION_LABEL = /^meta\s*description\s*[:-]\s*(.*)$/i;
 const H1_LABEL = /^(?:h1|blog\s*title|page\s*title|article\s*title|title)\s*[:-]\s*(.*)$/i;
+const CANONICAL_LABEL = /^canonical\s*[:-]\s*(.*)$/i;
+const SLUG_LABEL      = /^(?:seo\s*slug|slug|permalink|url)\s*[:-]\s*(.*)$/i;
 
 // Metadata-only fields that must be stripped from the body paragraph list
 const METADATA_LABEL = /^(?:seo\s*slug|slug|canonical|redirect|author|category|tags?|published|date|focus\s*keyword|primary\s*keyword|schema|robots|noindex|url|permalink|alt\s*text)\s*[:-]/i;
@@ -24,6 +26,8 @@ interface LabeledFields {
   metaTitle?: string;
   metaDescription?: string;
   h1?: string;
+  canonical?: string;
+  slug?: string;
 }
 
 /**
@@ -85,10 +89,12 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
     h2Headings,
     h3Headings,
     paragraphs,
-    metaTitle:       labeledFields.metaTitle       || undefined,
-    metaDescription: labeledFields.metaDescription || undefined,
+    metaTitle:            labeledFields.metaTitle       || undefined,
+    metaDescription:      labeledFields.metaDescription || undefined,
     links,
-    boldPhrases
+    boldPhrases,
+    expectedCanonicalUrl: labeledFields.canonical || undefined,
+    expectedSlug:         labeledFields.slug      || undefined
   };
 }
 
@@ -118,7 +124,11 @@ function applyLabeledLine(text: string, fields: LabeledFields): void {
   const mdm = META_DESCRIPTION_LABEL.exec(text);
   if (mdm) { fields.metaDescription = fields.metaDescription ?? normalizeText(mdm[1] ?? ''); return; }
   const h1m = H1_LABEL.exec(text);
-  if (h1m) { fields.h1              = fields.h1              ?? normalizeText(h1m[1] ?? ''); }
+  if (h1m) { fields.h1              = fields.h1              ?? normalizeText(h1m[1] ?? ''); return; }
+  const canm = CANONICAL_LABEL.exec(text);
+  if (canm) { fields.canonical      = fields.canonical       ?? normalizeText(canm[1] ?? ''); return; }
+  const slugm = SLUG_LABEL.exec(text);
+  if (slugm) { fields.slug          = fields.slug            ?? normalizeText(slugm[1] ?? ''); }
 }
 
 function applyTableRows(tableHtml: string, fields: LabeledFields): void {
@@ -137,6 +147,10 @@ function applyTableRows(tableHtml: string, fields: LabeledFields): void {
       fields.metaDescription = fields.metaDescription ?? value;
     } else if (['h1', 'blog title', 'page title', 'article title', 'title'].includes(normLabel)) {
       fields.h1 = fields.h1 ?? value;
+    } else if (normLabel === 'canonical') {
+      fields.canonical = fields.canonical ?? value;
+    } else if (['seo slug', 'slug', 'permalink', 'url'].includes(normLabel)) {
+      fields.slug = fields.slug ?? value;
     }
   }
 }

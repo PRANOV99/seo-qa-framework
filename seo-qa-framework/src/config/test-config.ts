@@ -18,5 +18,6 @@ export const testConfig = {
   viewport: {
     width: env.VIEWPORT_WIDTH,
     height: env.VIEWPORT_HEIGHT
-  }
+  },
+  maxBlogBatchSize: env.MAX_BLOG_BATCH_SIZE
 } as const;

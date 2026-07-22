@@ -1,6 +1,7 @@
 import type { BlogContent, BlogLink } from '../types/blog.js';
 import type { SeoCheckResult } from '../types/check-result.js';
 import { normalizeForComparison, normalizeText } from '../seo-checks/check-utils.js';
+import { normalizeUrl } from './url-normalizer.js';
 
 /**
  * Compares the approved blog content (extracted from the .docx) against the
@@ -8,6 +9,8 @@ import { normalizeForComparison, normalizeText } from '../seo-checks/check-utils
  *
  * Produces PASS / FAIL / WARNING / SKIPPED SeoCheckResult entries:
  *  - Metadata (Meta Title, Meta Description, H1)
+ *  - Canonical URL (self-referencing, or matching a docx "Canonical:" override)
+ *  - Blog URL / Slug (only when the docx specifies an expected slug/URL)
  *  - H2 / H3 headings (presence and order)
  *  - Body paragraphs (similarity-based matching — minor punctuation /
  *    whitespace differences do not cause false failures)
@@ -28,6 +31,10 @@ export function compareBlogContent(
     // H1 is skipped ONLY when expected.title is absent — never when it has a value.
     compareSingleValue(url, 'Blog Title (H1)',   expected.title,           actual.title,
       'H1 is missing from the live page.'),
+
+    // ── URL-level checks ─────────────────────────────────────────────────────
+    compareCanonicalUrl(url, expected.expectedCanonicalUrl, actual.canonicalUrl),
+    compareSlug(url, expected.expectedSlug),
 
     // ── Headings ─────────────────────────────────────────────────────────────
     ...compareHeadingList(url, 'H2', expected.h2Headings, actual.h2Headings),
@@ -73,6 +80,96 @@ function compareSingleValue(
   }
   return { url, checkType, status: 'passed', expected, actual,
            message: `${checkType} matches the approved document.` };
+}
+
+// ── Canonical URL comparison ───────────────────────────────────────────────────
+
+/**
+ * Validates the live page's `<link rel="canonical">` tag.
+ *
+ * Expectation:
+ *  - If the approved document specifies a "Canonical: …" override, the live
+ *    canonical must match that value.
+ *  - Otherwise, standard SEO practice for a blog post is a self-referencing
+ *    canonical, so the live canonical is expected to match the audited URL.
+ */
+function compareCanonicalUrl(
+  url: string,
+  expectedCanonicalOverride: string | undefined,
+  actualCanonicalUrl: string | undefined
+): SeoCheckResult {
+  const checkType = 'Canonical URL';
+  const expectedTarget = expectedCanonicalOverride
+    ? normalizeUrl(expectedCanonicalOverride, url)
+    : normalizeUrl(url, url);
+  const expectedDisplay = expectedCanonicalOverride ?? url;
+
+  if (!actualCanonicalUrl) {
+    return { url, checkType, status: 'failed', expected: expectedDisplay, actual: undefined,
+             message: 'Canonical URL is missing from the live page.' };
+  }
+
+  const normalizedActual = normalizeUrl(actualCanonicalUrl, url);
+  if (normalizedActual !== expectedTarget) {
+    return {
+      url, checkType, status: 'failed', expected: expectedDisplay, actual: actualCanonicalUrl,
+      message: `Canonical URL does not match. Expected it to point to "${expectedDisplay}" ` +
+               `but found "${actualCanonicalUrl}".`
+    };
+  }
+
+  return { url, checkType, status: 'passed', expected: expectedDisplay, actual: actualCanonicalUrl,
+           message: 'Canonical URL matches the expected target.' };
+}
+
+// ── Blog URL / slug comparison ─────────────────────────────────────────────────
+
+/**
+ * Validates that the audited (live) URL's path matches the expected
+ * slug/URL structure declared in the approved document (an "SEO Slug:" /
+ * "Slug:" / "Permalink:" / "URL:" labeled line). Skipped when the document
+ * provides no such label — this check has no meaning without one.
+ *
+ * Matching is lenient: the expected value may be authored as a bare slug
+ * ("top-reasons-to-choose-jrc-wildwoods") or a full path
+ * ("/blog/top-reasons-to-choose-jrc-wildwoods"), so a match is accepted
+ * either way.
+ */
+function compareSlug(url: string, expectedSlug: string | undefined): SeoCheckResult {
+  const checkType = 'Blog URL / Slug';
+  const cleanExpected = expectedSlug ? normalizeSlugSegment(expectedSlug) : '';
+
+  if (!cleanExpected) {
+    return { url, checkType, status: 'skipped', expected: expectedSlug, actual: undefined,
+             message: 'No expected URL/slug was specified in the approved document.' };
+  }
+
+  let actualPath: string;
+  try {
+    actualPath = normalizeSlugSegment(new URL(url).pathname);
+  } catch {
+    actualPath = normalizeSlugSegment(url);
+  }
+
+  const matches =
+    actualPath === cleanExpected ||
+    actualPath.endsWith(`/${cleanExpected}`) ||
+    actualPath.endsWith(cleanExpected);
+
+  if (!matches) {
+    return {
+      url, checkType, status: 'failed', expected: expectedSlug, actual: actualPath,
+      message: `The live URL does not match the expected slug. Expected "${expectedSlug}" ` +
+               `but the live URL path is "${actualPath}".`
+    };
+  }
+
+  return { url, checkType, status: 'passed', expected: expectedSlug, actual: actualPath,
+           message: 'Live URL matches the expected slug/structure.' };
+}
+
+function normalizeSlugSegment(value: string): string {
+  return value.trim().toLowerCase().replace(/^\/+|\/+$/g, '');
 }
 
 // ── Heading-list comparison ────────────────────────────────────────────────────
