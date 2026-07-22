@@ -15,6 +15,19 @@ export function normalizeQuotes(value: string): string {
     .replace(/[“”„‟]/g, '"');
 }
 
+/**
+ * Strips a run of sentence-ending punctuation (. , ! ? ; : and the "…"
+ * ellipsis character) from the very start and end of a string only —
+ * punctuation in the MIDDLE of the text is left untouched. A CMS/editor
+ * adding or dropping a trailing period (or similar) on publish is a
+ * formatting nicety, not a content change, so it should never by itself
+ * fail a metadata/heading/paragraph comparison — only a genuine wording
+ * change should.
+ */
+export function stripEdgePunctuation(value: string): string {
+  return value.replace(/^[.,!?;:…]+|[.,!?;:…]+$/g, '');
+}
+
 function tokenize(text: string): string[] {
   return text.split(/\s+/).filter((token) => token !== '');
 }

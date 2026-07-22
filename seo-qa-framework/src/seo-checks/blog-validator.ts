@@ -31,9 +31,13 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
   const [scopedTitle, h2Headings, h3Headings, h4Headings, paragraphs, metaTitle, metaDescription, canonicalHref] =
     await Promise.all([
       extractText(page, `${scope} h1`),
-      extractAllText(page, `${scope} h2`),
-      extractAllText(page, `${scope} h3`),
-      extractAllText(page, `${scope} h4`),
+      extractAllText(page, `${scope} h2, ${scope} [role="heading"][aria-level="2"]`),
+      extractAllText(page, `${scope} h3, ${scope} [role="heading"][aria-level="3"]`),
+      // Accordion/FAQ widgets (a common WordPress/page-builder pattern) often
+      // render their question text as a <button>/<div> with role="heading"
+      // and an explicit aria-level instead of a literal <h4> tag — include
+      // those so an FAQ heading that genuinely exists isn't missed.
+      extractAllText(page, `${scope} h4, ${scope} [role="heading"][aria-level="4"]`),
       extractAllText(page, `${scope} p`),
       page.title(),
       page.$eval('meta[name="description"]', (el) => el.getAttribute('content')).catch(() => null),

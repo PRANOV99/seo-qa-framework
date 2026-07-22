@@ -2,7 +2,7 @@ import type { BlogContent, BlogLink } from '../types/blog.js';
 import type { SeoCheckResult } from '../types/check-result.js';
 import { normalizeForComparison, normalizeText } from '../seo-checks/check-utils.js';
 import { normalizeUrl } from './url-normalizer.js';
-import { computeLcsAlignment, computeWordDiff, normalizeQuotes, summarizeWordDiff } from './text-diff.js';
+import { computeLcsAlignment, computeWordDiff, normalizeQuotes, stripEdgePunctuation, summarizeWordDiff } from './text-diff.js';
 
 /**
  * Compares the approved blog content (extracted from the .docx) against the
@@ -52,7 +52,7 @@ export function compareBlogContent(
     ...compareLinks(url, expected.links, actual.links),
 
     // ── Bold formatting ───────────────────────────────────────────────────────
-    ...compareBoldPhrases(url, expected.boldPhrases, actual.boldPhrases),
+    ...compareBoldPhrases(url, expected.boldPhrases, actual.boldPhrases, actualHeadingTexts(actual)),
   ];
 
   return results;
@@ -79,8 +79,11 @@ function compareSingleValue(
   }
   // Quote-normalized so typographic substitutions (e.g. a numeric &#8217;
   // entity rendering as a curly apostrophe) don't by themselves fail this
-  // check — same treatment as paragraphs and headings.
-  if (normalizeQuotes(normalizeForComparison(expected)) !== normalizeQuotes(normalizeForComparison(actual))) {
+  // check — same treatment as paragraphs and headings. Edge punctuation
+  // (a trailing period, etc.) is also ignored — a CMS adding or dropping one
+  // on publish is a formatting nicety, not a wording change.
+  if (stripEdgePunctuation(normalizeQuotes(normalizeForComparison(expected)))
+      !== stripEdgePunctuation(normalizeQuotes(normalizeForComparison(actual)))) {
     return {
       url, checkType, status: 'failed', expected, actual,
       message: `${checkType} has changed. Expected "${normExp}" but found "${normAct}".`
@@ -183,13 +186,24 @@ function normalizeSlugSegment(value: string): string {
 // ── Heading-list comparison ────────────────────────────────────────────────────
 
 /**
- * Compares H2/H3 heading lists for presence and order.
+ * Compares H2/H3/H4 heading lists for presence and order.
  *
- * Matching is quote-normalized in addition to the usual whitespace/case
- * normalization, so a typographic apostrophe substitution (e.g. a live page
- * rendering a docx's straight `'` as a curly `’` — whether authored that way
- * or produced by decoding a numeric `&#8217;` entity) does not by itself
- * cause a heading that is genuinely present to be reported as missing.
+ * Matching is quote-normalized and edge-punctuation-normalized in addition
+ * to the usual whitespace/case normalization, so a typographic apostrophe
+ * substitution (e.g. a live page rendering a docx's straight `'` as a curly
+ * `’` — whether authored that way or produced by decoding a numeric
+ * `&#8217;` entity) or a trailing colon/period a theme adds to section
+ * headings does not by itself cause a heading that is genuinely present to
+ * be reported as missing.
+ *
+ * Order is checked the same way as body paragraphs: via the longest common
+ * subsequence (LCS) of exact matches, not strict positional equality — one
+ * heading inserted/removed elsewhere (e.g. an extra "Related Posts" heading
+ * a CMS template injects) doesn't cascade into "out of order" for every
+ * heading that follows it. A heading found verbatim on the live page but
+ * outside that maximal in-order match is reported as present-but-out-of-order
+ * — as a WARNING, not a FAIL, since the content itself is genuinely there;
+ * only a heading that truly cannot be found anywhere is a FAIL.
  */
 function compareHeadingList(
   url: string,
@@ -197,78 +211,125 @@ function compareHeadingList(
   expected: string[],
   actual: string[]
 ): SeoCheckResult[] {
-  const headingKey = (value: string) => normalizeQuotes(normalizeForComparison(value));
-  const normalizedActual = actual.map(headingKey);
+  const headingKey = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeForComparison(value)));
+
+  const expectedKeys = expected.map(headingKey);
+  const actualKeys = actual.map(headingKey);
+  const orderedMatch = computeLcsAlignment(expectedKeys, actualKeys, (x, y) => x === y);
 
   return expected.map((expectedHeading, index) => {
-    const checkType   = `${label} #${index + 1}`;
-    const normExpect  = headingKey(expectedHeading);
-    const actualIndex = normalizedActual.indexOf(normExpect);
+    const checkType  = `${label} #${index + 1}`;
+    const normExpect = expectedKeys[index]!;
 
-    if (actualIndex === -1) {
+    const matchedIndex = orderedMatch[index];
+    if (matchedIndex !== undefined) {
       return {
-        url, checkType, status: 'failed',
-        expected: expectedHeading, actual: undefined,
-        message: `${label} heading "${expectedHeading}" is missing from the live page.`
+        url, checkType, status: 'passed',
+        expected: expectedHeading, actual: actual[matchedIndex],
+        message: `${label} heading matches the approved document.`
       } satisfies SeoCheckResult;
     }
-    if (actualIndex !== index) {
+
+    // Not part of the maximal in-order match, but present verbatim
+    // elsewhere on the live page — the heading exists, it's just shifted
+    // relative to the others, so this is a WARNING, not a FAIL.
+    const actualIndex = actualKeys.indexOf(normExpect);
+    if (actualIndex !== -1) {
       return {
-        url, checkType, status: 'failed',
+        url, checkType, status: 'warning',
         expected: expectedHeading, actual: actual[actualIndex],
         message: `${label} heading "${expectedHeading}" is present but out of order ` +
-                 `(expected position ${index + 1}, found at position ${actualIndex + 1}).`
+                 `(expected around position ${index + 1}, found at position ${actualIndex + 1}).`
       } satisfies SeoCheckResult;
     }
+
+    // No exact match anywhere — but accordion/FAQ widgets and other
+    // dynamically structured markup sometimes wrap the same heading text in
+    // extra decoration (a toggle icon, a "+"/"-" character rendered as real
+    // text, etc.). If the expected text is still fully contained in a live
+    // heading (or vice versa) it is genuinely present, just not verbatim —
+    // a WARNING, not a FAIL.
+    const containedIndex = actualKeys.findIndex((key) => isHeadingContained(normExpect, key));
+    if (containedIndex !== -1) {
+      return {
+        url, checkType, status: 'warning',
+        expected: expectedHeading, actual: actual[containedIndex],
+        message: `${label} heading "${expectedHeading}" was found on the live page wrapped in ` +
+                 `additional markup (e.g. an accordion/FAQ widget) — found "${actual[containedIndex]}".`
+      } satisfies SeoCheckResult;
+    }
+
     return {
-      url, checkType, status: 'passed',
-      expected: expectedHeading, actual: actual[actualIndex],
-      message: `${label} heading matches the approved document.`
+      url, checkType, status: 'failed',
+      expected: expectedHeading, actual: undefined,
+      message: `${label} heading "${expectedHeading}" is missing from the live page.`
     } satisfies SeoCheckResult;
   });
+}
+
+/** Strips leading/trailing characters that aren't letters/digits — accordion toggle icons, bullets, decorative punctuation, etc. */
+function stripHeadingDecoration(value: string): string {
+  return value.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
+}
+
+/**
+ * True when one (already normalized) heading key is fully contained within
+ * the other after decorative leading/trailing characters are stripped —
+ * used as a last-resort match for a heading whose live markup wraps the
+ * same text in extra decoration. Guarded by a minimum length so short
+ * headings don't spuriously "contain" unrelated longer ones.
+ */
+function isHeadingContained(expectedKey: string, actualKey: string): boolean {
+  const e = stripHeadingDecoration(expectedKey);
+  const a = stripHeadingDecoration(actualKey);
+  if (e.length < 4 || a.length < 4) return false;
+  return a.includes(e) || e.includes(a);
 }
 
 // ── Paragraph comparison ───────────────────────────────────────────────────────
 
 /**
- * Compares body paragraphs using content-similarity rather than strict
- * positional matching so minor formatting / punctuation differences don't
- * cause false failures.
+ * Compares body paragraphs by content first, then position — never the
+ * other way around — so minor formatting / punctuation differences or a
+ * shifted position don't cause false failures.
  *
  * Paragraphs are identified in the report by a human-readable preview of the
  * first 10 words rather than a generic "Body Paragraph #N" label.
  *
- * Matching is quote-normalized as well as whitespace/case-normalized, so
- * typographic substitutions content platforms make on publish (e.g.
- * WordPress' wptexturize converting straight quotes to curly ones) do not by
+ * Matching is quote-normalized and edge-punctuation-normalized, as well as
+ * whitespace/case-normalized, so typographic substitutions content platforms
+ * make on publish (e.g. WordPress' wptexturize converting straight quotes to
+ * curly ones, or a theme dropping/adding a trailing period) do not by
  * themselves cause a paragraph to be reported as changed — only genuine
  * content differences do. When a paragraph is genuinely modified, a
  * word-level diff is attached (see text-diff.ts) so the report can show
  * exactly what changed instead of a generic message.
  *
- * Order is checked via sequential matching with resynchronization rather
- * than strict positional equality: an expected paragraph's live-page
- * position no longer has to equal its position in the approved document.
- * Concretely, the longest common subsequence (LCS) of exact matches between
- * the expected and actual paragraph lists is computed first — every
- * paragraph in that subsequence is genuinely in the same relative order in
- * both, so one paragraph inserted, removed, or reordered elsewhere doesn't
- * cascade into "out of order" failures for everything that follows it. Only
- * a paragraph left OUT of that maximal subsequence, but still found
- * word-for-word somewhere else in the live page, is genuinely out of order.
+ * Position is only consulted AFTER content matching, via the longest common
+ * subsequence (LCS) of exact matches between the expected and actual
+ * paragraph lists — every paragraph in that subsequence is genuinely in the
+ * same relative order in both, so one paragraph inserted, removed, or
+ * reordered elsewhere doesn't cascade into false failures for everything
+ * that follows it, and a paragraph at the same (or a merely shifted, e.g.
+ * because something was added before it) position always passes. Only a
+ * paragraph left OUT of that maximal subsequence, but still found
+ * word-for-word somewhere else in the live page, has genuinely moved — that
+ * is a WARNING, not a FAIL, since the content itself is unchanged.
  */
 function compareParagraphs(
   url: string,
   expected: string[],
   actual: string[]
 ): SeoCheckResult[] {
-  // Case-insensitive, quote-normalized, whitespace-collapsed key used purely
-  // to decide whether two paragraphs are "the same" — matches the existing
-  // case-insensitive comparison semantics used throughout this file.
-  const paragraphKey = (value: string) => normalizeQuotes(normalizeForComparison(value));
-  // Case-preserving, quote/whitespace-normalized text used to compute and
-  // display the diff, so insignificant quote differences never appear in it.
-  const paragraphDisplay = (value: string) => normalizeQuotes(normalizeText(value));
+  // Case-insensitive, quote-normalized, edge-punctuation-normalized,
+  // whitespace-collapsed key used purely to decide whether two paragraphs
+  // are "the same" — matches the existing case-insensitive comparison
+  // semantics used throughout this file.
+  const paragraphKey = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeForComparison(value)));
+  // Case-preserving, quote/whitespace/edge-punctuation-normalized text used
+  // to compute and display the diff, so insignificant differences never
+  // appear in it — only genuine wording changes do.
+  const paragraphDisplay = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeText(value)));
 
   const expectedKeys = expected.map(paragraphKey);
   const actualKeys = actual.map(paragraphKey);
@@ -289,14 +350,14 @@ function compareParagraphs(
     }
 
     // Not part of the maximal in-order match, but present verbatim elsewhere
-    // on the live page — genuinely out of order (reordered relative to the
-    // paragraphs around it), not just displaced by an insertion/removal.
+    // on the live page — the paragraph is unchanged, it has simply moved, so
+    // this is a WARNING (not a FAIL): the content itself is genuinely there.
     const anyExactIndex = actualKeys.indexOf(normExpect);
     if (anyExactIndex !== -1) {
       return {
-        url, checkType, status: 'failed',
+        url, checkType, status: 'warning',
         expected: expectedParagraph, actual: actual[anyExactIndex],
-        message: `Paragraph is present but out of order ` +
+        message: `Paragraph is unchanged but has moved ` +
                  `(expected around position ${index + 1}, found at position ${anyExactIndex + 1}).`
       } satisfies SeoCheckResult;
     }
@@ -419,15 +480,27 @@ function compareLinks(
  * Compares bold phrases:
  *  - Expected bold missing from live page → FAIL
  *  - Extra bold on live page not in approved document → WARNING
+ *
+ * A docx author sometimes bolds an entire Heading-styled paragraph (e.g. a
+ * whole "Frequently Asked Questions" H2), which the docx parser captures as
+ * a bold phrase in addition to the heading itself. Live pages almost never
+ * render heading text inside a literal <strong>/<b> tag — headings are bold
+ * via their own styling — so that bold phrase would otherwise never find a
+ * match even though the heading is genuinely present and already verified by
+ * the heading comparison. `actualHeadings` reuses the same normalized
+ * heading text already extracted from the live page (title + H2/H3/H4) so
+ * that case is recognized as present rather than reported missing.
  */
 function compareBoldPhrases(
   url: string,
   expected: string[],
-  actual: string[]
+  actual: string[],
+  actualHeadings: string[]
 ): SeoCheckResult[] {
   const results: SeoCheckResult[] = [];
-  const normalizedActualSet   = new Set(actual.map(normalizeForComparison));
-  const normalizedExpectedSet = new Set(expected.map(normalizeForComparison));
+  const normalizedActualSet        = new Set(actual.map(normalizeForComparison));
+  const normalizedExpectedSet      = new Set(expected.map(normalizeForComparison));
+  const normalizedActualHeadingSet = new Set(actualHeadings.map(normalizeForComparison));
 
   for (const phrase of expected) {
     const norm    = normalizeForComparison(phrase);
@@ -439,6 +512,14 @@ function compareBoldPhrases(
         status: 'passed',
         expected: phrase, actual: phrase,
         message: 'Bold phrase matches the approved document.'
+      });
+    } else if (normalizedActualHeadingSet.has(norm)) {
+      results.push({
+        url,
+        checkType: `Bold: "${preview}"`,
+        status: 'passed',
+        expected: phrase, actual: phrase,
+        message: 'Bold phrase matches a heading on the live page (rendered bold via heading styling, not a literal bold tag).'
       });
     } else {
       results.push({
@@ -465,6 +546,12 @@ function compareBoldPhrases(
   }
 
   return results;
+}
+
+/** Every heading on the live page, across all levels, for cross-checking bold phrases against heading text (see compareBoldPhrases). */
+function actualHeadingTexts(actual: BlogContent): string[] {
+  return [actual.title, ...actual.h2Headings, ...actual.h3Headings, ...actual.h4Headings]
+    .filter((heading): heading is string => Boolean(heading));
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────

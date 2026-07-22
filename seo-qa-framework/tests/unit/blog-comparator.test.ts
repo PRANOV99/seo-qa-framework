@@ -125,6 +125,77 @@ describe('compareBlogContent — metadata', () => {
 
     assert.equal(h1Result?.status, 'passed');
   });
+
+  it('PASSES Meta Description when the only difference is a trailing period', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaDescription = 'Explore why luxury 4 BHK villas are in high demand — discover our ready-to-move homes.';
+
+    const actual = exactMatch(baseExpected);
+    actual.metaDescription = 'Explore why luxury 4 BHK villas are in high demand — discover our ready-to-move homes';
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', expected, actual);
+    const metaDesc = results.find((r) => r.checkType === 'Meta Description');
+
+    assert.equal(metaDesc?.status, 'passed',
+      `Expected trailing-period-only difference to PASS. Got: ${JSON.stringify(metaDesc)}`);
+  });
+
+  it('PASSES Meta Title when the only difference is trailing punctuation, for each punctuation mark', () => {
+    for (const mark of ['.', ',', '!', '?', ';', ':']) {
+      const expected = exactMatch(baseExpected);
+      expected.metaTitle = `How to Bake Sourdough Bread${mark}`;
+
+      const actual = exactMatch(baseExpected);
+      actual.metaTitle = 'How to Bake Sourdough Bread';
+
+      const results = compareBlogContent('https://example.com/blog/sourdough', expected, actual);
+      const metaTitle = results.find((r) => r.checkType === 'Meta Title');
+
+      assert.equal(metaTitle?.status, 'passed', `Trailing "${mark}" should be ignored. Got: ${JSON.stringify(metaTitle)}`);
+    }
+  });
+
+  it('still FAILS Meta Description for a genuine wording change, even when punctuation also differs', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaDescription = 'Explore why luxury 4 BHK villas are in high demand.';
+
+    const actual = exactMatch(baseExpected);
+    actual.metaDescription = 'Explore why premium 3 BHK apartments are in high demand';
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', expected, actual);
+    const metaDesc = results.find((r) => r.checkType === 'Meta Description');
+
+    assert.equal(metaDesc?.status, 'failed');
+    assert.match(metaDesc?.message ?? '', /has changed/);
+  });
+
+  it('PASSES Meta Description when the docx uses a literal ellipsis character where the live page has none', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaDescription = 'Explore why luxury 4 BHK villas are in high demand…';
+
+    const actual = exactMatch(baseExpected);
+    actual.metaDescription = 'Explore why luxury 4 BHK villas are in high demand';
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', expected, actual);
+    const metaDesc = results.find((r) => r.checkType === 'Meta Description');
+
+    assert.equal(metaDesc?.status, 'passed', `Got: ${JSON.stringify(metaDesc)}`);
+  });
+
+  it('keeps working alongside quote normalization and whitespace normalization together', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaTitle = "Baker's Guide to Sourdough Bread.";
+
+    const actual = exactMatch(baseExpected);
+    // Curly apostrophe (quote normalization) + extra internal whitespace
+    // (whitespace normalization) + missing trailing period (this fix), all at once.
+    actual.metaTitle = 'Baker’s   Guide to Sourdough Bread';
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', expected, actual);
+    const metaTitle = results.find((r) => r.checkType === 'Meta Title');
+
+    assert.equal(metaTitle?.status, 'passed', `Got: ${JSON.stringify(metaTitle)}`);
+  });
 });
 
 // ── Canonical URL comparisons ───────────────────────────────────────────────────
@@ -240,14 +311,15 @@ describe('compareBlogContent — headings', () => {
     assert.match(missing?.message ?? '', /missing from the live page/);
   });
 
-  it('detects an H2 heading that is out of order', () => {
+  it('detects an H2 heading that is out of order — as a WARNING, since the heading genuinely exists', () => {
     const actual = exactMatch(baseExpected);
     actual.h2Headings = ['Ingredients', 'Tips for Success', 'Method']; // Method/Tips swapped
 
     const results      = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
     const methodResult = results.find((r) => r.expected === 'Method');
 
-    assert.equal(methodResult?.status, 'failed');
+    assert.equal(methodResult?.status, 'warning',
+      'A heading that exists but is out of order must be a WARNING, not a FAIL.');
     assert.match(methodResult?.message ?? '', /out of order/);
   });
 
@@ -315,6 +387,108 @@ describe('compareBlogContent — headings', () => {
     assert.equal(h2?.status, 'failed');
     assert.match(h2?.message ?? '', /missing from the live page/);
   });
+
+  it('PASSES a heading when the only difference is trailing punctuation (e.g. a theme adding a colon)', () => {
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['Frequently Asked Questions'] };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['Frequently Asked Questions:'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h2 = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(h2?.status, 'passed', `Got: ${JSON.stringify(h2)}`);
+  });
+
+  it('does NOT report Missing for a heading that exists but is reported at a much later position — reports it as an "out of order" WARNING instead', () => {
+    // Mirrors the reported example: expected position 1, found position 5.
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['Overview', 'Pricing', 'Amenities', 'Location'] };
+    const actual = exactMatch(expected);
+    // Four unrelated CMS-injected headings pushed in front of "Overview".
+    actual.h2Headings = ['Related Posts', 'Popular This Week', 'Editor Picks', 'Trending Now', 'Overview', 'Pricing', 'Amenities', 'Location'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const overview = results.find((r) => r.checkType === 'H2 #1');
+    const pricing  = results.find((r) => r.checkType === 'H2 #2');
+    const amenities = results.find((r) => r.checkType === 'H2 #3');
+    const location = results.find((r) => r.checkType === 'H2 #4');
+
+    // All four are genuinely present, just shifted by a constant offset —
+    // none of them should be Missing, and none should cascade into failures.
+    assert.notEqual(overview?.status, 'failed');
+    assert.equal(overview?.status, 'passed', `Got: ${JSON.stringify(overview)}`);
+    assert.equal(pricing?.status, 'passed', `Got: ${JSON.stringify(pricing)}`);
+    assert.equal(amenities?.status, 'passed', `Got: ${JSON.stringify(amenities)}`);
+    assert.equal(location?.status, 'passed', `Got: ${JSON.stringify(location)}`);
+  });
+
+  it('reports a genuinely reordered heading as an "out of order" WARNING without cascading to the others', () => {
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['Overview', 'Pricing', 'Amenities', 'Location'] };
+    const actual = exactMatch(expected);
+    // "Overview" moved to the very end — Pricing/Amenities/Location stay in
+    // their correct relative order to each other.
+    actual.h2Headings = ['Pricing', 'Amenities', 'Location', 'Overview'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const overview  = results.find((r) => r.checkType === 'H2 #1');
+    const pricing   = results.find((r) => r.checkType === 'H2 #2');
+    const amenities = results.find((r) => r.checkType === 'H2 #3');
+    const location  = results.find((r) => r.checkType === 'H2 #4');
+
+    assert.equal(pricing?.status, 'passed', `Got: ${JSON.stringify(pricing)}`);
+    assert.equal(amenities?.status, 'passed', `Got: ${JSON.stringify(amenities)}`);
+    assert.equal(location?.status, 'passed', `Got: ${JSON.stringify(location)}`);
+    assert.equal(overview?.status, 'warning', 'Only the genuinely-moved heading should be flagged, as a WARNING.');
+    assert.match(overview?.message ?? '', /out of order/);
+  });
+
+  it('only FAILS a heading when its text truly does not exist anywhere on the live page', () => {
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['Overview', 'Pricing'] };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['Pricing']; // "Overview" genuinely removed, not just shifted
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const overview = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(overview?.status, 'failed');
+    assert.match(overview?.message ?? '', /missing from the live page/);
+  });
+
+  it('reports "Frequently Asked Questions" as a WARNING (not Missing) when an accordion widget wraps it in extra decoration', () => {
+    // Reported bug: an FAQ section heading rendered by an accordion/page-builder
+    // widget with a leading toggle icon that Playwright's innerText() picks up
+    // as real text — the heading itself is genuinely present.
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['Frequently Asked Questions'] };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['+ Frequently Asked Questions'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h2 = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.notEqual(h2?.status, 'failed', `Must never report Missing when the heading text exists. Got: ${JSON.stringify(h2)}`);
+    assert.equal(h2?.status, 'warning', `Got: ${JSON.stringify(h2)}`);
+  });
+
+  it('reports an H4 FAQ question as a WARNING when trailing accordion decoration (e.g. a chevron/expand indicator) is appended', () => {
+    const expected: BlogContent = { ...baseExpected, h4Headings: ['What is the possession timeline?'] };
+    const actual = exactMatch(expected);
+    actual.h4Headings = ['What is the possession timeline? ▼'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h4 = results.find((r) => r.checkType === 'H4 #1');
+
+    assert.equal(h4?.status, 'warning', `Got: ${JSON.stringify(h4)}`);
+  });
+
+  it('still FAILS when a short heading only coincidentally overlaps with unrelated live text (containment guard)', () => {
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['FAQ'] };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['A Completely Unrelated Section About Something Else Entirely'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h2 = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(h2?.status, 'failed', `Got: ${JSON.stringify(h2)}`);
+  });
 });
 
 // ── Paragraph comparisons ──────────────────────────────────────────────────────
@@ -368,7 +542,40 @@ describe('compareBlogContent — paragraphs', () => {
       'A paragraph differing only in trailing whitespace must be PASSED, not FAILED.');
   });
 
-  it('detects paragraph order differences', () => {
+  it('PASSES a paragraph when the only difference is a trailing period (this exact fix)', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ['This section describes ready-to-move homes in the new development phase available now.']
+    };
+    const actual = exactMatch(richBase);
+    actual.paragraphs[0] = 'This section describes ready-to-move homes in the new development phase available now';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const first = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(first?.status, 'passed', `Got: ${JSON.stringify(first)}`);
+  });
+
+  it('still reports a genuine wording change as Modified even when trailing punctuation also differs, without showing the punctuation itself as a spurious diff', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ['This section describes ready-to-move homes in the new development phase available now.']
+    };
+    const actual = exactMatch(richBase);
+    // Only "homes" -> "villas" is a real change; the trailing period is
+    // simply absent here, same as the "PASSES ... trailing period" test above.
+    actual.paragraphs[0] = 'This section describes ready-to-move villas in the new development phase available now';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const first = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(first?.status, 'failed');
+    const changed = first?.diff?.filter((seg) => seg.type === 'changed') ?? [];
+    assert.deepEqual(changed, [{ type: 'changed', expected: 'homes', actual: 'villas' }],
+      `Expected exactly one real word change and no punctuation-driven noise. Got: ${JSON.stringify(first?.diff)}`);
+  });
+
+  it('detects paragraph order differences — as a WARNING ("moved"), since the paragraph is unchanged', () => {
     const actual = exactMatch(baseExpected);
     // Swap first and second paragraph
     actual.paragraphs = [
@@ -380,8 +587,9 @@ describe('compareBlogContent — paragraphs', () => {
     const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
     const first   = results.find((r) => r.expected === baseExpected.paragraphs[0]);
 
-    assert.equal(first?.status, 'failed');
-    assert.match(first?.message ?? '', /out of order/);
+    assert.equal(first?.status, 'warning',
+      'A paragraph that is unchanged but moved must be a WARNING, not a FAIL.');
+    assert.match(first?.message ?? '', /moved/);
   });
 });
 
@@ -568,8 +776,9 @@ describe('compareBlogContent — paragraph order resynchronization', () => {
     assert.equal(second?.status, 'passed', `Got: ${JSON.stringify(second)}`);
     assert.equal(third?.status, 'passed', `Got: ${JSON.stringify(third)}`);
     assert.equal(fourth?.status, 'passed', `Got: ${JSON.stringify(fourth)}`);
-    assert.equal(first?.status, 'failed', 'Only the genuinely-moved paragraph should be flagged.');
-    assert.match(first?.message ?? '', /out of order/);
+    assert.equal(first?.status, 'warning',
+      'Only the genuinely-moved paragraph should be flagged, and as a WARNING (it is unchanged, just moved).');
+    assert.match(first?.message ?? '', /moved/);
   });
 
   it('still detects genuine reordering (an adjacent swap) rather than treating everything as fine', () => {
@@ -579,11 +788,12 @@ describe('compareBlogContent — paragraph order resynchronization', () => {
     actual.paragraphs = [FOUR_PARAGRAPHS[1]!, FOUR_PARAGRAPHS[0]!, FOUR_PARAGRAPHS[2]!, FOUR_PARAGRAPHS[3]!];
 
     const results = compareBlogContent(BASE_URL, expected, actual);
-    const failed = results.filter((r) => FOUR_PARAGRAPHS.includes(r.expected ?? '') && r.status === 'failed');
+    const flagged = results.filter((r) => FOUR_PARAGRAPHS.includes(r.expected ?? '') && r.status !== 'passed');
 
-    assert.equal(failed.length, 1,
-      `Exactly one paragraph should be flagged for a simple adjacent swap. Got: ${JSON.stringify(failed)}`);
-    assert.match(failed[0]?.message ?? '', /out of order/);
+    assert.equal(flagged.length, 1,
+      `Exactly one paragraph should be flagged for a simple adjacent swap. Got: ${JSON.stringify(flagged)}`);
+    assert.equal(flagged[0]?.status, 'warning');
+    assert.match(flagged[0]?.message ?? '', /moved/);
   });
 
   it('passes every paragraph when nothing changed at all (baseline sanity check)', () => {
@@ -782,5 +992,43 @@ describe('compareBlogContent — bold formatting', () => {
 
     assert.equal(extraBold.length, 0,
       'No extra-bold warnings should appear when actual bold matches expected exactly.');
+  });
+
+  it('PASSES a bold phrase that is really a whole bolded heading, even though the live page has no literal <strong>/<b> for it', () => {
+    // Reported bug: a docx author bolded an entire Heading-styled paragraph
+    // (e.g. bolding all of "Frequently Asked Questions"), so the docx parser
+    // captured that heading's full text as a bold phrase in addition to the
+    // heading itself. Live pages render heading text bold via heading
+    // styling, not a literal <strong>/<b> tag, so the bold check must fall
+    // back to the live page's heading text (reusing the same normalized text
+    // already extracted for the heading comparison) instead of failing.
+    const expected: BlogContent = {
+      ...baseExpected,
+      h2Headings: ['Frequently Asked Questions'],
+      boldPhrases: [...baseExpected.boldPhrases, 'Frequently Asked Questions']
+    };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['Frequently Asked Questions']; // present as a heading
+    actual.boldPhrases = baseExpected.boldPhrases;       // but NOT wrapped in a literal <strong>/<b>
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const boldFaq = results.find((r) => r.checkType === 'Bold: "Frequently Asked Questions"');
+
+    assert.equal(boldFaq?.status, 'passed', `Got: ${JSON.stringify(boldFaq)}`);
+  });
+
+  it('still FAILS a bold phrase that matches neither live bold text nor any live heading', () => {
+    const expected: BlogContent = {
+      ...baseExpected,
+      boldPhrases: [...baseExpected.boldPhrases, 'Limited Time Offer']
+    };
+    const actual = exactMatch(expected);
+    actual.boldPhrases = baseExpected.boldPhrases; // "Limited Time Offer" genuinely absent, not a heading either
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const bold = results.find((r) => r.checkType === 'Bold: "Limited Time Offer"');
+
+    assert.equal(bold?.status, 'failed', `Got: ${JSON.stringify(bold)}`);
+    assert.match(bold?.message ?? '', /missing from the live page/);
   });
 });
