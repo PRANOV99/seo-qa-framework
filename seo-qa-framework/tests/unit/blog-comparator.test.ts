@@ -271,7 +271,9 @@ describe('compareBlogContent — paragraphs', () => {
     const modified = results.find((r) => r.expected === richBase.paragraphs[1]);
 
     assert.equal(modified?.status, 'failed');
-    assert.match(modified?.message ?? '', /modified/i);
+    assert.match(modified?.message ?? '', /Paragraph text has changed/);
+    assert.ok(modified?.diff && modified.diff.length > 0, 'A word-level diff should be attached to a modified paragraph.');
+    assert.ok(modified?.diff?.some((seg) => seg.type !== 'same'), 'The diff should contain at least one non-matching segment.');
   });
 
   it('does not report matching paragraphs as missing due to minor punctuation or spacing differences', () => {
@@ -301,6 +303,94 @@ describe('compareBlogContent — paragraphs', () => {
 
     assert.equal(first?.status, 'failed');
     assert.match(first?.message ?? '', /out of order/);
+  });
+});
+
+// ── Paragraph typography normalization + word-level diff ───────────────────────
+
+describe('compareBlogContent — paragraph typography & diff', () => {
+  it('PASSES when the only difference is curly/smart quotes (e.g. WordPress wptexturize)', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ["The city's growth story reflects Mokila's emergence as a destination."]
+    };
+    const actual = exactMatch(richBase);
+    // Curly apostrophes, as a CMS would render them — same content, different characters.
+    actual.paragraphs[0] = 'The city’s growth story reflects Mokila’s emergence as a destination.';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const para     = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(para?.status, 'passed',
+      'A paragraph differing only by straight vs curly quotes must PASS.');
+  });
+
+  it('PASSES when the only difference is extra internal whitespace or CRLF line endings', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ['This paragraph has multiple internal words for testing whitespace handling properly.']
+    };
+    const actual = exactMatch(richBase);
+    actual.paragraphs[0] = 'This paragraph  has\r\nmultiple   internal words for testing whitespace handling properly.';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const para     = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(para?.status, 'passed',
+      'A paragraph differing only by whitespace/line-ending noise must PASS.');
+  });
+
+  it('FAILS a genuine one-word change and attaches a diff with a "changed" segment', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ['The quick brown fox jumps over the lazy dog near the riverbank.']
+    };
+    const actual = exactMatch(richBase);
+    actual.paragraphs[0] = 'The quick brown fox jumps over the sleepy dog near the riverbank.';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const para     = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(para?.status, 'failed');
+    const changed = para?.diff?.find((seg) => seg.type === 'changed');
+    assert.ok(changed, 'Expected a "changed" diff segment for the substituted word.');
+    assert.equal(changed?.expected, 'lazy');
+    assert.equal(changed?.actual, 'sleepy');
+    assert.match(para?.message ?? '', /word.*changed/i);
+  });
+
+  it('FAILS a missing word and attaches a diff with a "removed" segment', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ['The quick brown fox jumps over the lazy sleeping dog near the riverbank.']
+    };
+    const actual = exactMatch(richBase);
+    actual.paragraphs[0] = 'The quick brown fox jumps over the lazy dog near the riverbank.';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const para     = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(para?.status, 'failed');
+    const removed = para?.diff?.find((seg) => seg.type === 'removed');
+    assert.ok(removed, 'Expected a "removed" diff segment for the dropped word.');
+    assert.equal(removed?.expected, 'sleeping');
+  });
+
+  it('FAILS an extra word and attaches a diff with an "added" segment', () => {
+    const richBase: BlogContent = {
+      ...baseExpected,
+      paragraphs: ['The quick brown fox jumps over the lazy dog near the riverbank.']
+    };
+    const actual = exactMatch(richBase);
+    actual.paragraphs[0] = 'The quick brown fox jumps swiftly over the lazy dog near the riverbank.';
+
+    const results = compareBlogContent(BASE_URL, richBase, actual);
+    const para     = results.find((r) => r.expected === richBase.paragraphs[0]);
+
+    assert.equal(para?.status, 'failed');
+    const added = para?.diff?.find((seg) => seg.type === 'added');
+    assert.ok(added, 'Expected an "added" diff segment for the inserted word.');
+    assert.equal(added?.actual, 'swiftly');
   });
 });
 

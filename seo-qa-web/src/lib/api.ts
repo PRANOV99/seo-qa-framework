@@ -209,6 +209,14 @@ export interface AuditSummary {
   };
 }
 
+export type DiffSegmentType = 'same' | 'added' | 'removed' | 'changed';
+
+export interface DiffSegment {
+  type: DiffSegmentType;
+  expected?: string;
+  actual?: string;
+}
+
 export interface SeoCheckResult {
   url: string;
   checkType: string;
@@ -217,6 +225,8 @@ export interface SeoCheckResult {
   actual?: string;
   message?: string;
   screenshotPath?: string;
+  /** Word-level diff, present only for a failed paragraph comparison with a genuine text change. */
+  diff?: DiffSegment[];
 }
 
 export interface RedirectResult {

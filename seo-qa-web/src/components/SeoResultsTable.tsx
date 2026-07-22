@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { ChevronUp, ChevronDown, Search } from 'lucide-react';
 import type { SeoCheckResult } from '../lib/api';
 import StatusBadge from './StatusBadge';
+import DiffView from './DiffView';
 
 interface Props {
   results: SeoCheckResult[];
@@ -127,7 +128,16 @@ export default function SeoResultsTable({ results, title }: Props) {
                 <td><div className="check-cell">{r.checkType}</div></td>
                 <td><div className="value-cell">{r.expected ?? <span className="text-muted">—</span>}</div></td>
                 <td><div className="value-cell">{r.actual ?? <span className="text-muted">—</span>}</div></td>
-                <td><div className="value-cell">{r.message ?? <span className="text-muted">—</span>}</div></td>
+                <td>
+                  {r.diff && r.diff.length > 0 ? (
+                    <div className="value-cell" style={{ maxWidth: 360 }}>
+                      <div className="text-xs text-muted" style={{ marginBottom: 4 }}>{r.message}</div>
+                      <DiffView segments={r.diff} />
+                    </div>
+                  ) : (
+                    <div className="value-cell">{r.message ?? <span className="text-muted">—</span>}</div>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

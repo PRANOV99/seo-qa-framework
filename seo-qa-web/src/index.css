@@ -154,6 +154,11 @@ td .url-cell { word-break: break-all; font-size: 12px; max-width: 260px; }
 td .check-cell { max-width: 220px; word-break: break-word; }
 td .value-cell { max-width: 200px; word-break: break-word; font-size: 12px; }
 
+/* ── Word diff ──────────────────────────────────────────────────────────────── */
+.diff-view { font-size: 12px; line-height: 1.7; }
+.diff-removed { background: #fee2e2; color: #991b1b; text-decoration: line-through; padding: 0 3px; border-radius: 3px; }
+.diff-added   { background: #dcfce7; color: #166534; padding: 0 3px; border-radius: 3px; }
+
 /* ── Badges ─────────────────────────────────────────────────────────────────── */
 .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
 .badge-success { background: #dcfce7; color: #166534; }

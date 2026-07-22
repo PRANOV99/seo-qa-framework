@@ -2,6 +2,7 @@ import type { BlogContent, BlogLink } from '../types/blog.js';
 import type { SeoCheckResult } from '../types/check-result.js';
 import { normalizeForComparison, normalizeText } from '../seo-checks/check-utils.js';
 import { normalizeUrl } from './url-normalizer.js';
+import { computeWordDiff, normalizeQuotes, summarizeWordDiff } from './text-diff.js';
 
 /**
  * Compares the approved blog content (extracted from the .docx) against the
@@ -13,7 +14,8 @@ import { normalizeUrl } from './url-normalizer.js';
  *  - Blog URL / Slug (only when the docx specifies an expected slug/URL)
  *  - H2 / H3 headings (presence and order)
  *  - Body paragraphs (similarity-based matching — minor punctuation /
- *    whitespace differences do not cause false failures)
+ *    whitespace / smart-quote differences do not cause false failures; a
+ *    genuine change is reported with a word-level diff)
  *  - Hyperlinks (anchor text + destination URL)
  *  - Bold formatting (missing = FAIL; extra = WARNING)
  */
@@ -219,18 +221,34 @@ function compareHeadingList(
  *
  * Paragraphs are identified in the report by a human-readable preview of the
  * first 10 words rather than a generic "Body Paragraph #N" label.
+ *
+ * Matching is quote-normalized as well as whitespace/case-normalized, so
+ * typographic substitutions content platforms make on publish (e.g.
+ * WordPress' wptexturize converting straight quotes to curly ones) do not by
+ * themselves cause a paragraph to be reported as changed — only genuine
+ * content differences do. When a paragraph is genuinely modified, a
+ * word-level diff is attached (see text-diff.ts) so the report can show
+ * exactly what changed instead of a generic message.
  */
 function compareParagraphs(
   url: string,
   expected: string[],
   actual: string[]
 ): SeoCheckResult[] {
-  const normalizedActual = actual.map(normalizeForComparison);
+  // Case-insensitive, quote-normalized, whitespace-collapsed key used purely
+  // to decide whether two paragraphs are "the same" — matches the existing
+  // case-insensitive comparison semantics used throughout this file.
+  const paragraphKey = (value: string) => normalizeQuotes(normalizeForComparison(value));
+  // Case-preserving, quote/whitespace-normalized text used to compute and
+  // display the diff, so insignificant quote differences never appear in it.
+  const paragraphDisplay = (value: string) => normalizeQuotes(normalizeText(value));
+
+  const normalizedActual = actual.map(paragraphKey);
 
   return expected.map((expectedParagraph, index) => {
     const preview         = paragraphPreview(expectedParagraph);
     const checkType       = `"${preview}"`;
-    const normExpect      = normalizeForComparison(expectedParagraph);
+    const normExpect      = paragraphKey(expectedParagraph);
     const exactIndex      = normalizedActual.indexOf(normExpect);
 
     if (exactIndex !== -1) {
@@ -251,10 +269,13 @@ function compareParagraphs(
 
     const closestIndex = findMostSimilarIndex(normExpect, normalizedActual);
     if (closestIndex !== undefined) {
+      const closestActual = actual[closestIndex]!;
+      const diff = computeWordDiff(paragraphDisplay(expectedParagraph), paragraphDisplay(closestActual));
       return {
         url, checkType, status: 'failed',
-        expected: expectedParagraph, actual: actual[closestIndex],
-        message: 'Paragraph text has been modified from the approved document.'
+        expected: expectedParagraph, actual: closestActual,
+        message: summarizeWordDiff(diff),
+        diff
       } satisfies SeoCheckResult;
     }
 
