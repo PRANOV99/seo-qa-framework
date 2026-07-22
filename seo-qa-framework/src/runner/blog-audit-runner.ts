@@ -42,6 +42,7 @@ export class BlogAuditRunner {
       docxPath,
       h2Count: expected.h2Headings.length,
       h3Count: expected.h3Headings.length,
+      h4Count: expected.h4Headings.length,
       paragraphCount: expected.paragraphs.length,
       hasMetaTitle: Boolean(expected.metaTitle),
       hasMetaDescription: Boolean(expected.metaDescription)

@@ -20,6 +20,51 @@ function tokenize(text: string): string[] {
 }
 
 /**
+ * Computes the longest common subsequence (LCS) between two sequences under
+ * a custom equality function, returning — for each index in `a` — the
+ * corresponding index in `b` if that element participates in the maximal
+ * order-preserving alignment, or `undefined` if it doesn't.
+ *
+ * This is the general building block behind "resynchronizing" sequence
+ * comparisons: elements in the LCS are genuinely in the same relative order
+ * in both sequences, so one inserted/removed/reordered element elsewhere
+ * doesn't cascade into false mismatches for everything that follows it.
+ * Used by the blog comparator's paragraph-order resynchronization.
+ */
+export function computeLcsAlignment<T>(
+  a: readonly T[],
+  b: readonly T[],
+  equals: (x: T, y: T) => boolean
+): Array<number | undefined> {
+  const n = a.length;
+  const m = b.length;
+
+  const table: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      table[i]![j] = equals(a[i]!, b[j]!)
+        ? table[i + 1]![j + 1]! + 1
+        : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
+    }
+  }
+
+  const alignment: Array<number | undefined> = new Array(n).fill(undefined);
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (equals(a[i]!, b[j]!)) {
+      alignment[i] = j;
+      i++; j++;
+    } else if (table[i + 1]![j]! >= table[i]![j + 1]!) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return alignment;
+}
+
+/**
  * Computes a word-level diff between two texts using an LCS (longest common
  * subsequence) alignment. Token equality is case-insensitive, matching the
  * existing case-insensitive paragraph-comparison semantics elsewhere in the

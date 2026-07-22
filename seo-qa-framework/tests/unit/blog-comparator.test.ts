@@ -24,6 +24,7 @@ const baseExpected: BlogContent = {
   metaDescription: 'Learn how to bake sourdough bread at home with this step-by-step guide.',
   h2Headings:      ['Ingredients', 'Method', 'Tips for Success'],
   h3Headings:      ['Starter', 'Proofing'],
+  h4Headings:      [],
   paragraphs: [
     'The sourdough starter needs regular feeding to stay healthy and active.',
     'Combine flour, water, salt, and starter to form a shaggy dough.',
@@ -283,6 +284,23 @@ describe('compareBlogContent — headings', () => {
     assert.equal(h3?.status, 'passed');
   });
 
+  it('compares H4 headings the same way as H2/H3 (e.g. FAQ questions)', () => {
+    const expected: BlogContent = {
+      ...baseExpected,
+      h4Headings: ['Is financing available?', 'What is the possession timeline?']
+    };
+    const actual = exactMatch(expected);
+    actual.h4Headings = ['Is financing available?']; // second FAQ question missing from the live page
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const q1 = results.find((r) => r.checkType === 'H4 #1');
+    const q2 = results.find((r) => r.checkType === 'H4 #2');
+
+    assert.equal(q1?.status, 'passed');
+    assert.equal(q2?.status, 'failed');
+    assert.match(q2?.message ?? '', /missing from the live page/);
+  });
+
   it('still FAILS an H2 with a genuine wording difference, not just a quote-style one', () => {
     const expected: BlogContent = {
       ...baseExpected,
@@ -452,6 +470,130 @@ describe('compareBlogContent — paragraph typography & diff', () => {
     const added = para?.diff?.find((seg) => seg.type === 'added');
     assert.ok(added, 'Expected an "added" diff segment for the inserted word.');
     assert.equal(added?.actual, 'swiftly');
+  });
+});
+
+// ── Paragraph order resynchronization ───────────────────────────────────────────
+//
+// Regression coverage: the comparator used to require an expected
+// paragraph's live-page position to equal its position in the approved
+// document, so a single inserted/removed paragraph shifted every later
+// paragraph's index and cascaded into dozens of false "out of order"
+// failures. It now matches via the longest common subsequence of exact
+// matches, so insertions/removals elsewhere don't affect paragraphs whose
+// relative order is otherwise intact.
+
+describe('compareBlogContent — paragraph order resynchronization', () => {
+  // Rich, distinct paragraphs so the ≥3-content-word / 65%-Jaccard
+  // similarity fallback never accidentally kicks in for these order tests.
+  const FOUR_PARAGRAPHS = [
+    'The sourdough starter needs regular feeding to stay healthy and active every single day.',
+    'Combine flour, water, salt, and starter to form a shaggy dough before the first rest.',
+    'Allow the dough to proof overnight before baking in a hot Dutch oven the next morning.',
+    'Slice the finished loaf only once it has cooled completely on a wire rack.'
+  ];
+
+  function withParagraphs(paragraphs: string[]): BlogContent {
+    return { ...baseExpected, paragraphs };
+  }
+
+  it('does NOT cascade a single inserted paragraph into "out of order" failures for everything after it', () => {
+    const expected = withParagraphs(FOUR_PARAGRAPHS);
+    const actual = exactMatch(expected);
+    // Insert an unrelated CMS-injected paragraph at the very front.
+    actual.paragraphs = [
+      'This post was updated in 2026 to reflect the latest pricing.',
+      ...FOUR_PARAGRAPHS
+    ];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const paragraphResults = FOUR_PARAGRAPHS.map((p) => results.find((r) => r.expected === p));
+
+    assert.ok(paragraphResults.every((r) => r?.status === 'passed'),
+      `A leading insertion must not cascade into false failures. Got: ${JSON.stringify(paragraphResults)}`);
+  });
+
+  it('does NOT cascade a single inserted paragraph in the MIDDLE of the sequence', () => {
+    const expected = withParagraphs(FOUR_PARAGRAPHS);
+    const actual = exactMatch(expected);
+    actual.paragraphs = [
+      FOUR_PARAGRAPHS[0]!,
+      FOUR_PARAGRAPHS[1]!,
+      'An unrelated related-posts teaser paragraph injected by the CMS template.',
+      FOUR_PARAGRAPHS[2]!,
+      FOUR_PARAGRAPHS[3]!
+    ];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const paragraphResults = FOUR_PARAGRAPHS.map((p) => results.find((r) => r.expected === p));
+
+    assert.ok(paragraphResults.every((r) => r?.status === 'passed'),
+      `A middle insertion must not cascade into false failures. Got: ${JSON.stringify(paragraphResults)}`);
+  });
+
+  it('does NOT cascade a single removed paragraph into failures for the paragraphs that follow it', () => {
+    const expected = withParagraphs(FOUR_PARAGRAPHS);
+    const actual = exactMatch(expected);
+    // Second paragraph removed entirely from the live page.
+    actual.paragraphs = [FOUR_PARAGRAPHS[0]!, FOUR_PARAGRAPHS[2]!, FOUR_PARAGRAPHS[3]!];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+
+    const first  = results.find((r) => r.expected === FOUR_PARAGRAPHS[0]);
+    const second = results.find((r) => r.expected === FOUR_PARAGRAPHS[1]);
+    const third  = results.find((r) => r.expected === FOUR_PARAGRAPHS[2]);
+    const fourth = results.find((r) => r.expected === FOUR_PARAGRAPHS[3]);
+
+    assert.equal(first?.status, 'passed');
+    assert.equal(second?.status, 'failed');
+    assert.match(second?.message ?? '', /missing from the live page/);
+    // The two paragraphs AFTER the removed one must still pass, not cascade.
+    assert.equal(third?.status, 'passed', `Expected paragraph 3 to still pass. Got: ${JSON.stringify(third)}`);
+    assert.equal(fourth?.status, 'passed', `Expected paragraph 4 to still pass. Got: ${JSON.stringify(fourth)}`);
+  });
+
+  it('does NOT cascade when a paragraph is skipped/re-ordered elsewhere — only the genuinely displaced one fails', () => {
+    const expected = withParagraphs(FOUR_PARAGRAPHS);
+    const actual = exactMatch(expected);
+    // Move the FIRST paragraph to the very end — paragraphs 2-4 stay in
+    // their correct relative order to each other.
+    actual.paragraphs = [FOUR_PARAGRAPHS[1]!, FOUR_PARAGRAPHS[2]!, FOUR_PARAGRAPHS[3]!, FOUR_PARAGRAPHS[0]!];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const second = results.find((r) => r.expected === FOUR_PARAGRAPHS[1]);
+    const third  = results.find((r) => r.expected === FOUR_PARAGRAPHS[2]);
+    const fourth = results.find((r) => r.expected === FOUR_PARAGRAPHS[3]);
+    const first  = results.find((r) => r.expected === FOUR_PARAGRAPHS[0]);
+
+    assert.equal(second?.status, 'passed', `Got: ${JSON.stringify(second)}`);
+    assert.equal(third?.status, 'passed', `Got: ${JSON.stringify(third)}`);
+    assert.equal(fourth?.status, 'passed', `Got: ${JSON.stringify(fourth)}`);
+    assert.equal(first?.status, 'failed', 'Only the genuinely-moved paragraph should be flagged.');
+    assert.match(first?.message ?? '', /out of order/);
+  });
+
+  it('still detects genuine reordering (an adjacent swap) rather than treating everything as fine', () => {
+    const expected = withParagraphs(FOUR_PARAGRAPHS);
+    const actual = exactMatch(expected);
+    // Swap paragraphs 1 and 2.
+    actual.paragraphs = [FOUR_PARAGRAPHS[1]!, FOUR_PARAGRAPHS[0]!, FOUR_PARAGRAPHS[2]!, FOUR_PARAGRAPHS[3]!];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const failed = results.filter((r) => FOUR_PARAGRAPHS.includes(r.expected ?? '') && r.status === 'failed');
+
+    assert.equal(failed.length, 1,
+      `Exactly one paragraph should be flagged for a simple adjacent swap. Got: ${JSON.stringify(failed)}`);
+    assert.match(failed[0]?.message ?? '', /out of order/);
+  });
+
+  it('passes every paragraph when nothing changed at all (baseline sanity check)', () => {
+    const expected = withParagraphs(FOUR_PARAGRAPHS);
+    const actual = exactMatch(expected);
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const paragraphResults = FOUR_PARAGRAPHS.map((p) => results.find((r) => r.expected === p));
+
+    assert.ok(paragraphResults.every((r) => r?.status === 'passed'));
   });
 });
 

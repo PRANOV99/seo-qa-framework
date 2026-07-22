@@ -496,6 +496,366 @@ describe('parseBlogDocx — heading text extraction with inline formatting', () 
 
     assert.deepEqual(content.h3Headings, ['Plain start, bold and italic together, plain end.']);
   });
+
+  it('extracts a real Word "Heading 4" style into h4Headings', async () => {
+    const docxPath = await writeBlogDocx('real-h4.docx', [
+      heading(1, 'My Post'),
+      heading(4, 'What is the RERA registration number?'),
+      paragraph('It is P02400003701.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h4Headings, ['What is the RERA registration number?']);
+  });
+});
+
+// ── Metadata field boundaries ────────────────────────────────────────────────────
+//
+// Covers requirement: each metadata field must stop parsing when another
+// metadata field begins, and must never leak into paragraphs/bold — even
+// when two labels end up merged onto the same Word paragraph via a soft
+// line break (Shift+Enter), which is what "the parser currently merges
+// these" looked like in practice.
+
+describe('parseBlogDocx — metadata field boundaries', () => {
+  it('does not let Focus Keyword bleed into Canonical when merged via a soft line break', async () => {
+    const docxPath = await writeBlogDocx('canonical-then-focus-keyword.docx', [
+      heading(1, 'My Post'),
+      softBreakParagraph(
+        'Canonical: https://example.com/my-post',
+        'Focus Keyword: best sourdough recipe'
+      ),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post',
+      'Canonical must contain only the canonical value, not the next label.');
+  });
+
+  it('does not let Focus Keyword bleed into Slug when merged via a soft line break', async () => {
+    const docxPath = await writeBlogDocx('slug-then-focus-keyword.docx', [
+      heading(1, 'My Post'),
+      softBreakParagraph(
+        'SEO Slug: my-post-slug',
+        'Focus Keyword: best sourdough recipe'
+      ),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedSlug, 'my-post-slug',
+      'Slug must contain only the slug value, not the next label.');
+  });
+
+  it('stops each metadata field at the next one when three labels are merged onto one paragraph', async () => {
+    const docxPath = await writeBlogDocx('three-labels-merged.docx', [
+      heading(1, 'My Post'),
+      softBreakParagraph(
+        'Meta Description: A description of the post.',
+        'Canonical: https://example.com/my-post',
+        'SEO Slug: my-post-slug',
+        'Focus Keyword: sourdough'
+      ),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.metaDescription, 'A description of the post.');
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
+    assert.equal(content.expectedSlug, 'my-post-slug');
+  });
+
+  it('stops a label value at the next label even with no line break at all between them', async () => {
+    // Extreme edge case: no <br> and no separate paragraph — just two labels
+    // typed one after another on the same run of text.
+    const docxPath = await writeBlogDocx('same-line-labels.docx', [
+      heading(1, 'My Post'),
+      paragraph('Canonical: https://example.com/my-post Focus Keyword: sourdough starter'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
+  });
+
+  it('excludes Focus Keyword and Alt Text lines from paragraphs[] entirely', async () => {
+    const docxPath = await writeBlogDocx('focus-keyword-alt-text.docx', [
+      heading(1, 'My Post'),
+      paragraph('Focus Keyword: sourdough starter recipe'),
+      paragraph('Alt Text: a golden sourdough loaf cooling on a rack'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The real body paragraph.']);
+  });
+});
+
+// ── Metadata label variants (capitalization, punctuation, common typos) ────────
+
+describe('parseBlogDocx — metadata label variants', () => {
+  const metaDescriptionVariants = ['Meta Description', 'Met Description', 'meta description', 'Description'];
+  for (const label of metaDescriptionVariants) {
+    it(`recognizes "${label}:" as a Meta Description label`, async () => {
+      const docxPath = await writeBlogDocx(`meta-desc-variant-${label.replace(/\s+/g, '')}.docx`, [
+        heading(1, 'My Post'),
+        paragraph(`${label}: A description of the post.`),
+        paragraph('The real body paragraph.')
+      ]);
+
+      const content = await parseBlogDocx(docxPath);
+
+      assert.equal(content.metaDescription, 'A description of the post.',
+        `Label "${label}:" should populate metaDescription`);
+      assert.deepEqual(content.paragraphs, ['The real body paragraph.']);
+    });
+  }
+
+  it('recognizes "Canonical URL:" as well as bare "Canonical:"', async () => {
+    const docxPath = await writeBlogDocx('canonical-url-label.docx', [
+      heading(1, 'My Post'),
+      paragraph('Canonical URL: https://example.com/my-post')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
+  });
+
+  it('recognizes "Focus Keyword:" and "Alt Text:" regardless of case', async () => {
+    const docxPath = await writeBlogDocx('focus-alt-case.docx', [
+      heading(1, 'My Post'),
+      paragraph('FOCUS KEYWORD: sourdough'),
+      paragraph('alt text: a loaf of bread'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The real body paragraph.'],
+      'Focus Keyword / Alt Text lines must never appear as paragraphs, regardless of case.');
+  });
+
+  it('recognizes a hyphen or dash separator, not just a colon', async () => {
+    const docxPath = await writeBlogDocx('dash-separator.docx', [
+      heading(1, 'My Post'),
+      paragraph('Canonical - https://example.com/my-post')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
+  });
+});
+
+// ── Heading-level (H#) suffix stripping ─────────────────────────────────────────
+
+describe('parseBlogDocx — heading-level (H#) suffix', () => {
+  it('strips a "(H2)" suffix from a real Heading-2-styled heading', async () => {
+    const docxPath = await writeBlogDocx('h2-with-suffix.docx', [
+      heading(1, 'My Post'),
+      heading(2, 'Why Mokila Has Arrived (H2)')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h2Headings, ['Why Mokila Has Arrived']);
+  });
+
+  it('strips "(H1)".."(H4)" suffixes regardless of internal spacing or case', async () => {
+    const variants = ['(H2)', '( H2 )', '(h2)', '(H 2)', '(  h2  )'];
+    for (const suffix of variants) {
+      const docxPath = await writeBlogDocx(`h2-suffix-variant-${variants.indexOf(suffix)}.docx`, [
+        heading(1, 'My Post'),
+        heading(2, `Why Mokila Has Arrived ${suffix}`)
+      ]);
+
+      const content = await parseBlogDocx(docxPath);
+
+      assert.deepEqual(content.h2Headings, ['Why Mokila Has Arrived'],
+        `Suffix "${suffix}" should be stripped`);
+    }
+  });
+
+  it('promotes a plain paragraph ending in "(H4)" to an H4 heading instead of leaving it as a paragraph', async () => {
+    const docxPath = await writeBlogDocx('promoted-h4.docx', [
+      heading(1, 'My Post'),
+      paragraph('What is the RERA registration number? (H4)'),
+      paragraph('It is P02400003701.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h4Headings, ['What is the RERA registration number?']);
+    assert.deepEqual(content.paragraphs, ['It is P02400003701.']);
+  });
+
+  it('promotes a plain paragraph ending in "(H2)" to an H2 heading', async () => {
+    const docxPath = await writeBlogDocx('promoted-h2.docx', [
+      heading(1, 'My Post'),
+      paragraph('Why Sri Sreenivasa Infra Track Record Matters (H2)'),
+      paragraph('Body text follows.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h2Headings, ['Why Sri Sreenivasa Infra Track Record Matters']);
+    assert.deepEqual(content.paragraphs, ['Body text follows.']);
+  });
+
+  it('strips the suffix from hyperlink anchor text', async () => {
+    const docxPath = await writeBlogDocxWithRelationships('link-with-suffix.docx', [
+      { kind: 'heading', level: 1, text: 'My Post' },
+      { kind: 'hyperlink', text: 'our packing checklist (H2)', relId: 'rId2' }
+    ], {
+      rId2: 'https://example.com/packing-checklist'
+    });
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog');
+
+    assert.equal(content.links.length, 1);
+    assert.equal(content.links[0]!.text, 'our packing checklist');
+  });
+
+  it('strips the suffix from a bold phrase', async () => {
+    const docxPath = await writeBlogDocxWithBold('bold-with-suffix.docx', [
+      { kind: 'heading', level: 1, text: 'My Post' },
+      {
+        kind: 'paragraph-with-bold',
+        parts: [
+          { text: 'This has ', bold: false },
+          { text: 'a bold phrase (H2)', bold: true },
+          { text: ' in it.', bold: false }
+        ]
+      }
+    ]);
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog');
+
+    assert.ok(content.boldPhrases.includes('a bold phrase'),
+      `Expected suffix-stripped bold phrase. Got: ${JSON.stringify(content.boldPhrases)}`);
+    assert.ok(!content.boldPhrases.some((p) => p.includes('(H2)')),
+      'The raw "(H2)" suffix must never appear in a stored bold phrase.');
+  });
+});
+
+// ── FAQ parsing ──────────────────────────────────────────────────────────────────
+
+describe('parseBlogDocx — FAQ parsing', () => {
+  it('extracts a "Question (H4)" / answer pair as a separate H4 heading and paragraph when they are separate Word paragraphs', async () => {
+    const docxPath = await writeBlogDocx('faq-separate-paragraphs.docx', [
+      heading(1, 'My Post'),
+      paragraph('What is the RERA registration number? (H4)'),
+      paragraph('It is P02400003701, issued for this project.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h4Headings, ['What is the RERA registration number?']);
+    assert.deepEqual(content.paragraphs, ['It is P02400003701, issued for this project.']);
+  });
+
+  it('extracts a "Question (H4)" / answer pair correctly even when merged into one Word paragraph via a soft line break', async () => {
+    // Regression: this is exactly the reported bug — the parser used to
+    // concatenate the question and answer into a single paragraph.
+    const docxPath = await writeBlogDocx('faq-soft-break.docx', [
+      heading(1, 'My Post'),
+      softBreakParagraph(
+        'What is the RERA registration number? (H4)',
+        'It is P02400003701, issued for this project.'
+      )
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h4Headings, ['What is the RERA registration number?']);
+    assert.deepEqual(content.paragraphs, ['It is P02400003701, issued for this project.'],
+      `Question and answer must never be concatenated into one paragraph. Got paragraphs: ${JSON.stringify(content.paragraphs)}`);
+  });
+
+  it('extracts multiple FAQ question/answer pairs in sequence, each kept separate', async () => {
+    const docxPath = await writeBlogDocx('faq-multiple.docx', [
+      heading(1, 'My Post'),
+      softBreakParagraph('Is financing available? (H4)', 'Yes, several banks offer approved financing plans.'),
+      softBreakParagraph('What is the possession timeline? (H4)', 'Possession is expected within 18 months.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h4Headings, [
+      'Is financing available?',
+      'What is the possession timeline?'
+    ]);
+    assert.deepEqual(content.paragraphs, [
+      'Yes, several banks offer approved financing plans.',
+      'Possession is expected within 18 months.'
+    ]);
+  });
+
+  it('does not concatenate a real body paragraph that precedes a soft-broken FAQ question in the same Word paragraph', async () => {
+    const docxPath = await writeBlogDocx('faq-with-preceding-content.docx', [
+      heading(1, 'My Post'),
+      softBreakParagraph(
+        'Here is some closing context before the FAQ section begins.',
+        'Is financing available? (H4)',
+        'Yes, several banks offer approved financing plans.'
+      )
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h4Headings, ['Is financing available?']);
+    assert.deepEqual(content.paragraphs, [
+      'Here is some closing context before the FAQ section begins.',
+      'Yes, several banks offer approved financing plans.'
+    ]);
+  });
+});
+
+// ── Metadata excluded from bold validation ──────────────────────────────────────
+
+describe('parseBlogDocx — metadata excluded from bold validation', () => {
+  it('does not treat a bolded metadata label as a bold phrase', async () => {
+    const docxPath = await writeBlogDocxWithBold('bold-label.docx', [
+      { kind: 'heading', level: 1, text: 'My Post' },
+      { kind: 'paragraph-with-bold', parts: [{ text: 'Meta Description:', bold: true }, { text: ' A description of the post.', bold: false }] },
+      { kind: 'paragraph-with-bold', parts: [{ text: 'Canonical:', bold: true }, { text: ' https://example.com/my-post', bold: false }] },
+      { kind: 'paragraph-with-bold', parts: [{ text: 'Slug:', bold: true }, { text: ' my-post-slug', bold: false }] },
+      { kind: 'paragraph-with-bold', parts: [{ text: 'Focus Keyword:', bold: true }, { text: ' sourdough', bold: false }] },
+      { kind: 'paragraph-with-bold', parts: [{ text: 'Alt Text:', bold: true }, { text: ' a golden loaf', bold: false }] },
+      {
+        kind: 'paragraph-with-bold',
+        parts: [{ text: 'The real content has a ', bold: false }, { text: 'genuinely bold phrase', bold: true }, { text: ' in it.', bold: false }]
+      }
+    ]);
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog');
+
+    assert.deepEqual(content.boldPhrases, ['genuinely bold phrase'],
+      `Metadata labels must never appear as bold phrases. Got: ${JSON.stringify(content.boldPhrases)}`);
+  });
+
+  it('does not treat a bolded label-only phrase (no trailing colon) as a bold phrase', async () => {
+    const docxPath = await writeBlogDocxWithBold('bold-label-no-colon.docx', [
+      { kind: 'heading', level: 1, text: 'My Post' },
+      { kind: 'paragraph-with-bold', parts: [{ text: 'Canonical', bold: true }] },
+      {
+        kind: 'paragraph-with-bold',
+        parts: [{ text: 'Real ', bold: false }, { text: 'bold content', bold: true }]
+      }
+    ]);
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog');
+
+    assert.deepEqual(content.boldPhrases, ['bold content']);
+  });
 });
 
 // --- Minimal .docx fixture builder -----------------------------------------
@@ -508,7 +868,7 @@ describe('parseBlogDocx — heading text extraction with inline formatting', () 
 interface ParagraphBlock {
   kind: 'paragraph';
   text: string;
-  headingLevel?: 1 | 2 | 3;
+  headingLevel?: 1 | 2 | 3 | 4;
 }
 
 interface TableBlock {
@@ -516,18 +876,28 @@ interface TableBlock {
   rows: string[][];
 }
 
-type DocBlock = ParagraphBlock | TableBlock;
+/** A single Word paragraph containing multiple "lines" joined by soft line breaks (`<w:br/>`) rather than separate hard paragraphs — used to test that metadata/FAQ/heading-suffix lines are correctly separated even when merged this way. */
+interface SoftBreakParagraphBlock {
+  kind: 'soft-break-paragraph';
+  lines: string[];
+}
+
+type DocBlock = ParagraphBlock | TableBlock | SoftBreakParagraphBlock;
 
 function paragraph(text: string): ParagraphBlock {
   return { kind: 'paragraph', text };
 }
 
-function heading(level: 1 | 2 | 3, text: string): ParagraphBlock {
+function heading(level: 1 | 2 | 3 | 4, text: string): ParagraphBlock {
   return { kind: 'paragraph', text, headingLevel: level };
 }
 
 function table(rows: string[][]): TableBlock {
   return { kind: 'table', rows };
+}
+
+function softBreakParagraph(...lines: string[]): SoftBreakParagraphBlock {
+  return { kind: 'soft-break-paragraph', lines };
 }
 
 async function writeBlogDocx(fileName: string, blocks: DocBlock[]): Promise<string> {
@@ -567,6 +937,17 @@ function renderBlock(block: DocBlock): string {
       .join('');
 
     return `<w:tbl>${rowsXml}</w:tbl>`;
+  }
+
+  if (block.kind === 'soft-break-paragraph') {
+    const runsXml = block.lines
+      .map((line, i) => {
+        const textRun = `<w:r><w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r>`;
+        const breakRun = i < block.lines.length - 1 ? '<w:r><w:br/></w:r>' : '';
+        return textRun + breakRun;
+      })
+      .join('');
+    return `<w:p>${runsXml}</w:p>`;
   }
 
   const styleXml = block.headingLevel ? `<w:pPr><w:pStyle w:val="Heading${block.headingLevel}"/></w:pPr>` : '';

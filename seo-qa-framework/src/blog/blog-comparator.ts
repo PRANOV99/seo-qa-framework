@@ -2,7 +2,7 @@ import type { BlogContent, BlogLink } from '../types/blog.js';
 import type { SeoCheckResult } from '../types/check-result.js';
 import { normalizeForComparison, normalizeText } from '../seo-checks/check-utils.js';
 import { normalizeUrl } from './url-normalizer.js';
-import { computeWordDiff, normalizeQuotes, summarizeWordDiff } from './text-diff.js';
+import { computeLcsAlignment, computeWordDiff, normalizeQuotes, summarizeWordDiff } from './text-diff.js';
 
 /**
  * Compares the approved blog content (extracted from the .docx) against the
@@ -41,6 +41,9 @@ export function compareBlogContent(
     // ── Headings ─────────────────────────────────────────────────────────────
     ...compareHeadingList(url, 'H2', expected.h2Headings, actual.h2Headings),
     ...compareHeadingList(url, 'H3', expected.h3Headings, actual.h3Headings),
+    // H4 is most commonly FAQ questions ("Question text (H4)" in a content
+    // brief, or a real <h4> on the live page) — compared the same way as H2/H3.
+    ...compareHeadingList(url, 'H4', expected.h4Headings, actual.h4Headings),
 
     // ── Body paragraphs ──────────────────────────────────────────────────────
     ...compareParagraphs(url, expected.paragraphs, actual.paragraphs),
@@ -242,6 +245,17 @@ function compareHeadingList(
  * content differences do. When a paragraph is genuinely modified, a
  * word-level diff is attached (see text-diff.ts) so the report can show
  * exactly what changed instead of a generic message.
+ *
+ * Order is checked via sequential matching with resynchronization rather
+ * than strict positional equality: an expected paragraph's live-page
+ * position no longer has to equal its position in the approved document.
+ * Concretely, the longest common subsequence (LCS) of exact matches between
+ * the expected and actual paragraph lists is computed first — every
+ * paragraph in that subsequence is genuinely in the same relative order in
+ * both, so one paragraph inserted, removed, or reordered elsewhere doesn't
+ * cascade into "out of order" failures for everything that follows it. Only
+ * a paragraph left OUT of that maximal subsequence, but still found
+ * word-for-word somewhere else in the live page, is genuinely out of order.
  */
 function compareParagraphs(
   url: string,
@@ -256,31 +270,38 @@ function compareParagraphs(
   // display the diff, so insignificant quote differences never appear in it.
   const paragraphDisplay = (value: string) => normalizeQuotes(normalizeText(value));
 
-  const normalizedActual = actual.map(paragraphKey);
+  const expectedKeys = expected.map(paragraphKey);
+  const actualKeys = actual.map(paragraphKey);
+  const orderedMatch = computeLcsAlignment(expectedKeys, actualKeys, (x, y) => x === y);
 
   return expected.map((expectedParagraph, index) => {
-    const preview         = paragraphPreview(expectedParagraph);
-    const checkType       = `"${preview}"`;
-    const normExpect      = paragraphKey(expectedParagraph);
-    const exactIndex      = normalizedActual.indexOf(normExpect);
+    const preview    = paragraphPreview(expectedParagraph);
+    const checkType  = `"${preview}"`;
+    const normExpect = expectedKeys[index]!;
 
-    if (exactIndex !== -1) {
-      if (exactIndex === index) {
-        return {
-          url, checkType, status: 'passed',
-          expected: expectedParagraph, actual: actual[exactIndex],
-          message: 'Paragraph matches the approved document.'
-        } satisfies SeoCheckResult;
-      }
+    const matchedIndex = orderedMatch[index];
+    if (matchedIndex !== undefined) {
       return {
-        url, checkType, status: 'failed',
-        expected: expectedParagraph, actual: actual[exactIndex],
-        message: `Paragraph is present but out of order ` +
-                 `(expected position ${index + 1}, found at position ${exactIndex + 1}).`
+        url, checkType, status: 'passed',
+        expected: expectedParagraph, actual: actual[matchedIndex],
+        message: 'Paragraph matches the approved document.'
       } satisfies SeoCheckResult;
     }
 
-    const closestIndex = findMostSimilarIndex(normExpect, normalizedActual);
+    // Not part of the maximal in-order match, but present verbatim elsewhere
+    // on the live page — genuinely out of order (reordered relative to the
+    // paragraphs around it), not just displaced by an insertion/removal.
+    const anyExactIndex = actualKeys.indexOf(normExpect);
+    if (anyExactIndex !== -1) {
+      return {
+        url, checkType, status: 'failed',
+        expected: expectedParagraph, actual: actual[anyExactIndex],
+        message: `Paragraph is present but out of order ` +
+                 `(expected around position ${index + 1}, found at position ${anyExactIndex + 1}).`
+      } satisfies SeoCheckResult;
+    }
+
+    const closestIndex = findMostSimilarIndex(normExpect, actualKeys);
     if (closestIndex !== undefined) {
       const closestActual = actual[closestIndex]!;
       const diff = computeWordDiff(paragraphDisplay(expectedParagraph), paragraphDisplay(closestActual));

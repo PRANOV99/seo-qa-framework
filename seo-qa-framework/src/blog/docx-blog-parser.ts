@@ -3,15 +3,97 @@ import type { BlogContent, BlogLink } from '../types/blog.js';
 import { normalizeText } from '../seo-checks/check-utils.js';
 import { normalizeUrl } from './url-normalizer.js';
 
-// ── Label-detection regexes ────────────────────────────────────────────────────
-const META_TITLE_LABEL       = /^meta\s*title\s*[:-]\s*(.*)$/i;
-const META_DESCRIPTION_LABEL = /^meta\s*description\s*[:-]\s*(.*)$/i;
-const H1_LABEL = /^(?:h1|blog\s*title|page\s*title|article\s*title|title)\s*[:-]\s*(.*)$/i;
-const CANONICAL_LABEL = /^canonical\s*[:-]\s*(.*)$/i;
-const SLUG_LABEL      = /^(?:seo\s*slug|slug|permalink|url)\s*[:-]\s*(.*)$/i;
+// ── Metadata label recognition ──────────────────────────────────────────────────
+//
+// A single source of truth for every label a content brief might use for a
+// given metadata field, regardless of capitalization, punctuation, or minor
+// typos ("Met Description" for "Meta Description"). Each pattern is an
+// alternation (no anchors/flags of its own) plugged into the anchored/
+// unanchored regexes built below.
 
-// Metadata-only fields that must be stripped from the body paragraph list
-const METADATA_LABEL = /^(?:seo\s*slug|slug|canonical|redirect|author|category|tags?|published|date|focus\s*keyword|primary\s*keyword|schema|robots|noindex|url|permalink|alt\s*text)\s*[:-]/i;
+/** Labels that populate a specific BlogContent field, with all recognized synonyms. */
+const LABEL_PATTERNS: Record<'metaTitle' | 'metaDescription' | 'h1' | 'canonical' | 'slug', string> = {
+  metaTitle:       'meta\\s*title',
+  metaDescription: '(?:met\\s*description|meta\\s*description|description)',
+  h1:              '(?:h1|blog\\s*title|page\\s*title|article\\s*title|title)',
+  canonical:       'canonical(?:\\s*url)?',
+  slug:            '(?:seo\\s*slug|slug|permalink|url)'
+};
+
+/**
+ * Recognized metadata labels that must be stripped from paragraphs/bold, but
+ * have no corresponding BlogContent field — there's nothing on the live page
+ * to compare them against (they're content-authoring aids only).
+ */
+const UNCAPTURED_METADATA_LABELS =
+  'focus\\s*keyword|primary\\s*keyword|alt\\s*text|redirect|author|category|tags?|published|date|schema|robots|noindex';
+
+/** Every recognized label, for building "is this line/phrase a metadata label" tests. */
+const ALL_LABELS = [...Object.values(LABEL_PATTERNS), UNCAPTURED_METADATA_LABELS].join('|');
+
+/** Colon, hyphen, en dash, or em dash — whichever separator a content writer used between a label and its value. */
+const LABEL_SEPARATOR = '[:\\-\\u2013\\u2014]';
+
+/** Matches a metadata label at the very start of a line (used to exclude the whole line from paragraphs/headings). */
+const ANY_LABEL_LINE = new RegExp(`^\\s*(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}`, 'i');
+
+/**
+ * Matches the start of a (different) recognized label anywhere in a string —
+ * used to stop a label's captured value before it runs into the next label,
+ * for the rare case where two labels end up on the same physical line (e.g.
+ * "Canonical: https://... Focus Keyword: something" with no line break
+ * between them at all).
+ */
+const NEXT_LABEL_START = new RegExp(`(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}`, 'i');
+
+/** A phrase that is JUST a metadata label (optionally with its trailing separator) and nothing else — used to keep labels out of bold validation. */
+const METADATA_LABEL_PHRASE = new RegExp(`^\\s*(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}?\\s*$`, 'i');
+
+/** Precompiled "label + separator" regex per capturable field, anchored to the start of a line. */
+const LABEL_LINE_REGEXES: ReadonlyArray<{ key: keyof LabeledFields; regex: RegExp }> =
+  (Object.entries(LABEL_PATTERNS) as Array<[keyof LabeledFields, string]>).map(([key, pattern]) => ({
+    key,
+    regex: new RegExp(`^\\s*(?:${pattern})\\s*${LABEL_SEPARATOR}\\s*`, 'i')
+  }));
+
+/** Precompiled "label, and nothing else" regex per capturable field — used for table-cell labels, which are already isolated from their value by column. */
+const LABEL_FULL_REGEXES: ReadonlyArray<{ key: keyof LabeledFields; regex: RegExp }> =
+  (Object.entries(LABEL_PATTERNS) as Array<[keyof LabeledFields, string]>).map(([key, pattern]) => ({
+    key,
+    regex: new RegExp(`^(?:${pattern})$`, 'i')
+  }));
+
+function isAnyLabeledField(text: string): boolean {
+  return ANY_LABEL_LINE.test(text);
+}
+
+function isMetadataLabelPhrase(text: string): boolean {
+  return METADATA_LABEL_PHRASE.test(text);
+}
+
+// ── Heading-level suffix recognition ────────────────────────────────────────────
+
+/**
+ * A trailing "(H1)".."(H4)" annotation some content briefs use to mark a
+ * heading's level directly in its visible text — often on a FAQ question
+ * that's otherwise just a plain paragraph, e.g. "What is X? (H4)" — any
+ * spacing inside the parens, case-insensitive.
+ */
+const HEADING_LEVEL_SUFFIX = /\s*\(\s*h\s*([1-4])\s*\)\s*$/i;
+
+/** Detects a trailing "(H1)".."(H4)" suffix and returns its level, or undefined if there isn't one. */
+function detectHeadingSuffixLevel(text: string): 1 | 2 | 3 | 4 | undefined {
+  const match = HEADING_LEVEL_SUFFIX.exec(text);
+  if (!match) return undefined;
+  return Number(match[1]) as 1 | 2 | 3 | 4;
+}
+
+/** Strips a trailing "(H1)".."(H4)" suffix, if present, leaving only the visible heading text. Exported for direct unit testing. */
+export function stripHeadingSuffix(text: string): string {
+  return text.replace(HEADING_LEVEL_SUFFIX, '').trim();
+}
+
+// ── Divider / invisible-character detection (unchanged from before) ────────────
 
 // Zero-width / invisible characters that render as nothing: zero-width
 // space/non-joiner/joiner, word joiner, the Mongolian vowel separator, and
@@ -56,8 +138,10 @@ export function isDividerOnly(rawText: string): boolean {
   return DIVIDER_ONLY.test(visible);
 }
 
+// ── Types ────────────────────────────────────────────────────────────────────────
+
 interface Block {
-  tag: 'h1' | 'h2' | 'h3' | 'p' | 'table';
+  tag: 'h1' | 'h2' | 'h3' | 'h4' | 'p' | 'table';
   /** Raw inner HTML of the block as produced by mammoth. */
   innerHtml: string;
 }
@@ -70,16 +154,56 @@ interface LabeledFields {
   slug?: string;
 }
 
+interface HeadingState {
+  title?: string;
+  h2Headings: string[];
+  h3Headings: string[];
+  h4Headings: string[];
+}
+
+function pushHeading(state: HeadingState, level: 1 | 2 | 3 | 4, text: string): void {
+  if (level === 1) state.title = state.title ?? text;
+  else if (level === 2) state.h2Headings.push(text);
+  else if (level === 3) state.h3Headings.push(text);
+  else state.h4Headings.push(text);
+}
+
+function tagImpliedLevel(tag: Block['tag']): 1 | 2 | 3 | 4 | undefined {
+  if (tag === 'h1') return 1;
+  if (tag === 'h2') return 2;
+  if (tag === 'h3') return 3;
+  if (tag === 'h4') return 4;
+  return undefined;
+}
+
 /**
  * Parses an approved blog .docx into the normalized BlogContent shape.
  *
  * Extraction rules:
- *  - Word "Heading 1/2/3" styles → title / h2Headings / h3Headings
- *  - Labeled paragraphs ("Meta Title: …", "H1: …", etc.) → metadata fields
- *  - Metadata-only lines (SEO Slug, Category, Tags, dividers, empty) are
- *    silently discarded and never included in paragraphs[], links, or boldPhrases.
- *  - <a href="…"> tags from body paragraphs → links[]
- *  - <strong>/<b> tags from body paragraphs and headings → boldPhrases[]
+ *  - Word "Heading 1-4" styles → title / h2Headings / h3Headings / h4Headings.
+ *  - A trailing "(H1)".."(H4)" suffix on any line (including a plain
+ *    paragraph — the common FAQ-question convention) promotes that line to a
+ *    heading of the given level, regardless of its own Word style, and the
+ *    suffix is stripped from the stored text.
+ *  - Labeled paragraphs ("Meta Title: …", "Canonical: …", etc., in any of
+ *    their recognized synonyms/casing/punctuation) → metadata fields. Each
+ *    label's captured value stops at end-of-line, or at the start of another
+ *    recognized label if two ended up on the same physical line (e.g. joined
+ *    by a soft line break) — so one metadata field can never bleed into
+ *    another (a value never leaks into Canonical/Slug just because Focus
+ *    Keyword happens to follow it).
+ *  - Metadata-only lines (SEO Slug, Category, Tags, dividers, empty, …) are
+ *    silently discarded and never included in paragraphs[], links[], or
+ *    boldPhrases[] — nor is the metadata LABEL text itself ever treated as a
+ *    bold phrase, even when the content writer bolded the label for
+ *    visibility in the brief.
+ *  - A soft line break (Shift+Enter, i.e. `<br>`) inside one Word paragraph
+ *    is treated as a real line boundary for the purposes above — so e.g. a
+ *    "Question (H4)" line followed by its answer on the next soft-broken
+ *    line are extracted as a separate heading and a separate paragraph
+ *    instead of being concatenated into one paragraph.
+ *  - <a href="…"> tags from body content → links[].
+ *  - <strong>/<b> tags from body content and headings → boldPhrases[].
  *
  * @param filePath  Path to the .docx file.
  * @param pageUrl   The live blog URL — used to resolve any relative hrefs that
@@ -90,85 +214,143 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
   const { value: html } = await mammoth.convertToHtml({ path: filePath });
   const blocks = extractBlocks(html);
 
-  const labeledFields = extractLabeledFields(blocks);
+  const fields: LabeledFields = {};
   const paragraphs: string[] = [];
-  const links: BlogLink[]    = [];
+  const links: BlogLink[] = [];
   const boldPhrases: string[] = [];
+  const headings: HeadingState = { h2Headings: [], h3Headings: [], h4Headings: [] };
 
-  let title: string | undefined = labeledFields.h1;
-  const h2Headings: string[] = [];
-  const h3Headings: string[] = [];
+  const pushLinksAndBold = (html2: string) => {
+    links.push(...extractLinksFromHtml(html2, pageUrl).map((l) => ({ ...l, text: stripHeadingSuffix(l.text) })));
+    boldPhrases.push(
+      ...extractBoldFromHtml(html2)
+        .map((phrase) => stripHeadingSuffix(phrase))
+        .filter((phrase) => phrase !== '' && !isMetadataLabelPhrase(phrase))
+    );
+  };
 
   for (const block of blocks) {
-    const text = htmlToText(block.innerHtml);
-
-    if (!text) continue;
-
-    // Skip labeled metadata fields (already captured) and decorative divider lines
-    if (isAnyLabeledField(text) || isDividerOnly(text)) continue;
-
-    if (block.tag === 'h1') {
-      title = title ?? text;
-      // Bold inside an H1 is intentional (rare but possible)
-      boldPhrases.push(...extractBoldFromHtml(block.innerHtml));
-    } else if (block.tag === 'h2') {
-      h2Headings.push(text);
-      boldPhrases.push(...extractBoldFromHtml(block.innerHtml));
-    } else if (block.tag === 'h3') {
-      h3Headings.push(text);
-      boldPhrases.push(...extractBoldFromHtml(block.innerHtml));
-    } else if (block.tag === 'p') {
-      paragraphs.push(text);
-      links.push(...extractLinksFromHtml(block.innerHtml, pageUrl));
-      boldPhrases.push(...extractBoldFromHtml(block.innerHtml));
+    if (block.tag === 'table') {
+      applyTableRows(block.innerHtml, fields);
+      continue;
     }
+
+    const htmlLines = splitHtmlByBr(block.innerHtml);
+    const impliedLevel = tagImpliedLevel(block.tag);
+
+    if (impliedLevel !== undefined) {
+      // A genuine Word heading style. Headings are essentially always a
+      // single logical line; join any soft-broken lines back together, then
+      // let a trailing "(H#)" suffix (if present) override the tag's own
+      // level — e.g. an H2-styled heading annotated "(H4)" is treated as H4.
+      const realLines = htmlLines
+        .map((segment) => htmlToText(segment))
+        .filter((text) => text !== '' && !isAnyLabeledField(text) && !isDividerOnly(text));
+      if (realLines.length === 0) continue;
+
+      const joined = realLines.join(' ');
+      const suffixLevel = detectHeadingSuffixLevel(joined);
+      const cleanText = stripHeadingSuffix(joined);
+      if (!cleanText) continue;
+
+      pushHeading(headings, suffixLevel ?? impliedLevel, cleanText);
+      pushLinksAndBold(block.innerHtml);
+      continue;
+    }
+
+    // A plain paragraph ('p') block. Walk its lines (soft line breaks count
+    // as line boundaries) so a metadata label or a "(H#)"-suffixed FAQ
+    // question that got merged into the same Word paragraph as other
+    // content is correctly separated out, instead of being concatenated
+    // into one paragraph.
+    let pendingLines: string[] = [];
+    let pendingHtmlSegments: string[] = [];
+
+    const flushPendingParagraph = () => {
+      if (pendingLines.length === 0) return;
+      const joinedText = pendingLines.join(' ');
+      const segments = pendingHtmlSegments;
+      pendingLines = [];
+      pendingHtmlSegments = [];
+      if (!joinedText) return;
+      paragraphs.push(joinedText);
+      for (const segment of segments) pushLinksAndBold(segment);
+    };
+
+    for (const htmlSegment of htmlLines) {
+      const lineText = htmlToText(htmlSegment);
+      if (!lineText) continue;
+
+      if (isAnyLabeledField(lineText)) {
+        applyLabeledLine(lineText, fields);
+        continue;
+      }
+      if (isDividerOnly(lineText)) continue;
+
+      const suffixLevel = detectHeadingSuffixLevel(lineText);
+      const cleanLine = stripHeadingSuffix(lineText);
+      if (!cleanLine) continue;
+
+      if (suffixLevel !== undefined) {
+        flushPendingParagraph();
+        pushHeading(headings, suffixLevel, cleanLine);
+        pushLinksAndBold(htmlSegment);
+      } else {
+        pendingLines.push(cleanLine);
+        pendingHtmlSegments.push(htmlSegment);
+      }
+    }
+    flushPendingParagraph();
   }
 
+  // A labeled "H1: …" / "Title: …" field (inline or from a content-brief
+  // table) takes priority over a real Word H1 heading's text when both are
+  // present, matching the label-authoring convention's intent — it's only a
+  // fallback title source when the document has no real H1 heading at all.
+  const title = fields.h1 || headings.title || undefined;
+
   return {
-    title: title || undefined,
-    h2Headings,
-    h3Headings,
+    title,
+    h2Headings: headings.h2Headings,
+    h3Headings: headings.h3Headings,
+    h4Headings: headings.h4Headings,
     paragraphs,
-    metaTitle:            labeledFields.metaTitle       || undefined,
-    metaDescription:      labeledFields.metaDescription || undefined,
+    metaTitle:            fields.metaTitle       || undefined,
+    metaDescription:      fields.metaDescription || undefined,
     links,
     boldPhrases,
-    expectedCanonicalUrl: labeledFields.canonical || undefined,
-    expectedSlug:         labeledFields.slug      || undefined
+    expectedCanonicalUrl: fields.canonical || undefined,
+    expectedSlug:         fields.slug      || undefined
   };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function isAnyLabeledField(text: string): boolean {
-  return (
-    META_TITLE_LABEL.test(text)       ||
-    META_DESCRIPTION_LABEL.test(text) ||
-    H1_LABEL.test(text)               ||
-    METADATA_LABEL.test(text)
-  );
+/** Splits a block's inner HTML on `<br>` boundaries, preserving the HTML (tags intact) on either side — used so link/bold extraction still sees real markup within each resulting "line". */
+function splitHtmlByBr(innerHtml: string): string[] {
+  return innerHtml.split(/<br\s*\/?>/gi);
 }
 
-function extractLabeledFields(blocks: readonly Block[]): LabeledFields {
-  const fields: LabeledFields = {};
-  for (const block of blocks) {
-    if (block.tag === 'table') { applyTableRows(block.innerHtml, fields); continue; }
-    applyLabeledLine(htmlToText(block.innerHtml), fields);
+function applyLabeledLine(line: string, fields: LabeledFields): void {
+  for (const { key, regex } of LABEL_LINE_REGEXES) {
+    const match = regex.exec(line);
+    if (!match) continue;
+
+    let rest = line.slice(match[0].length);
+    // Stop the captured value at the start of another recognized label, in
+    // case two labels ended up on the same physical line (e.g. no line
+    // break at all between "Canonical: …" and "Focus Keyword: …").
+    const nextLabel = NEXT_LABEL_START.exec(rest);
+    if (nextLabel) rest = rest.slice(0, nextLabel.index);
+
+    fields[key] = fields[key] ?? normalizeText(rest);
+    return;
   }
-  return fields;
 }
 
-function applyLabeledLine(text: string, fields: LabeledFields): void {
-  const mtm = META_TITLE_LABEL.exec(text);
-  if (mtm) { fields.metaTitle       = fields.metaTitle       ?? normalizeText(mtm[1] ?? ''); return; }
-  const mdm = META_DESCRIPTION_LABEL.exec(text);
-  if (mdm) { fields.metaDescription = fields.metaDescription ?? normalizeText(mdm[1] ?? ''); return; }
-  const h1m = H1_LABEL.exec(text);
-  if (h1m) { fields.h1              = fields.h1              ?? normalizeText(h1m[1] ?? ''); return; }
-  const canm = CANONICAL_LABEL.exec(text);
-  if (canm) { fields.canonical      = fields.canonical       ?? normalizeText(canm[1] ?? ''); return; }
-  const slugm = SLUG_LABEL.exec(text);
-  if (slugm) { fields.slug          = fields.slug            ?? normalizeText(slugm[1] ?? ''); }
+function fieldKeyForLabel(label: string): keyof LabeledFields | undefined {
+  const normalized = label.trim();
+  return LABEL_FULL_REGEXES.find(({ regex }) => regex.test(normalized))?.key;
 }
 
 function applyTableRows(tableHtml: string, fields: LabeledFields): void {
@@ -180,24 +362,15 @@ function applyTableRows(tableHtml: string, fields: LabeledFields): void {
     if (cells.length < 2) continue;
     const [label, value] = cells;
     if (label === undefined || value === undefined) continue;
-    const normLabel = normalizeText(label).toLowerCase();
-    if (normLabel === 'meta title' || normLabel === 'metatitle') {
-      fields.metaTitle = fields.metaTitle ?? value;
-    } else if (normLabel === 'meta description' || normLabel === 'metadescription') {
-      fields.metaDescription = fields.metaDescription ?? value;
-    } else if (['h1', 'blog title', 'page title', 'article title', 'title'].includes(normLabel)) {
-      fields.h1 = fields.h1 ?? value;
-    } else if (normLabel === 'canonical') {
-      fields.canonical = fields.canonical ?? value;
-    } else if (['seo slug', 'slug', 'permalink', 'url'].includes(normLabel)) {
-      fields.slug = fields.slug ?? value;
-    }
+
+    const key = fieldKeyForLabel(label);
+    if (key) fields[key] = fields[key] ?? value;
   }
 }
 
 function extractBlocks(html: string): Block[] {
   const blocks: Block[] = [];
-  for (const match of html.matchAll(/<(h1|h2|h3|p|table)[^>]*>([\s\S]*?)<\/\1>/gi)) {
+  for (const match of html.matchAll(/<(h1|h2|h3|h4|p|table)[^>]*>([\s\S]*?)<\/\1>/gi)) {
     const tagName   = match[1];
     const innerHtml = match[2];
     if (tagName === undefined || innerHtml === undefined) continue;

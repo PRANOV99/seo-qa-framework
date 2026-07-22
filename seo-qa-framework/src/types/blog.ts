@@ -18,6 +18,11 @@ export interface BlogContent {
   title?: string;
   h2Headings: string[];
   h3Headings: string[];
+  /**
+   * H4 headings — most commonly FAQ questions ("Question text (H4)" in a
+   * content brief, or a real `<h4>` on the live page).
+   */
+  h4Headings: string[];
   /** Body paragraphs in document order (headings excluded). */
   paragraphs: string[];
   metaTitle?: string;

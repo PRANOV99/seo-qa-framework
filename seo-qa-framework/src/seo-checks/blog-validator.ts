@@ -28,11 +28,12 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
 
   // Title (H1) is often placed outside the content container in CMS themes,
   // so we try the scoped selector first then fall back to page-wide.
-  const [scopedTitle, h2Headings, h3Headings, paragraphs, metaTitle, metaDescription, canonicalHref] =
+  const [scopedTitle, h2Headings, h3Headings, h4Headings, paragraphs, metaTitle, metaDescription, canonicalHref] =
     await Promise.all([
       extractText(page, `${scope} h1`),
       extractAllText(page, `${scope} h2`),
       extractAllText(page, `${scope} h3`),
+      extractAllText(page, `${scope} h4`),
       extractAllText(page, `${scope} p`),
       page.title(),
       page.$eval('meta[name="description"]', (el) => el.getAttribute('content')).catch(() => null),
@@ -51,6 +52,7 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
     title:           title ?? undefined,
     h2Headings,
     h3Headings,
+    h4Headings,
     paragraphs,
     metaTitle:       normalizeText(metaTitle)           || undefined,
     metaDescription: normalizeText(metaDescription ?? undefined) || undefined,
