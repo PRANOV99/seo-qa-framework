@@ -46,4 +46,43 @@ describe('buildReportData', () => {
     assert.equal(titleCategory?.passed, 1);
     assert.equal(h1Category?.failed, 1);
   });
+
+  it('computes a dedicated Bold Text breakdown (passed/missing/extra) for blog runs', () => {
+    const reportData = buildReportData(
+      buildSampleAuditRunResult({
+        kind: 'blog',
+        seoCheckResults: [
+          { url: 'https://example.com/blog/x', checkType: 'Meta Title', status: 'passed', expected: 'A', actual: 'A' },
+          { url: 'https://example.com/blog/x', checkType: 'Bold: "sourdough starter"', status: 'passed', expected: 'sourdough starter', actual: 'sourdough starter' },
+          { url: 'https://example.com/blog/x', checkType: 'Bold: "Dutch oven"', status: 'passed', expected: 'Dutch oven', actual: 'Dutch oven' },
+          { url: 'https://example.com/blog/x', checkType: 'Bold: "hand-milled flour"', status: 'failed', expected: 'hand-milled flour', actual: undefined, message: 'Bold phrase "hand-milled flour" is missing from the live page.' },
+          { url: 'https://example.com/blog/x', checkType: 'Bold (extra): "limited time"', status: 'warning', expected: undefined, actual: 'limited time', message: 'Bold phrase "limited time" is present on the live page but not in the approved document.' }
+        ]
+      })
+    );
+
+    assert.deepEqual(reportData.summary.blogContent?.boldText, {
+      total: 3,
+      passed: 2,
+      missing: 1,
+      modified: 0,
+      extra: 1
+    });
+  });
+
+  it('does not confuse "Bold (extra)" entries with regular Bold checks when summarizing', () => {
+    const reportData = buildReportData(
+      buildSampleAuditRunResult({
+        kind: 'blog',
+        seoCheckResults: [
+          { url: 'https://example.com/blog/x', checkType: 'Bold: "sourdough starter"', status: 'passed', expected: 'sourdough starter', actual: 'sourdough starter' },
+          { url: 'https://example.com/blog/x', checkType: 'Bold (extra): "limited time"', status: 'warning', expected: undefined, actual: 'limited time' }
+        ]
+      })
+    );
+
+    assert.equal(reportData.summary.blogContent?.boldText.total, 1,
+      'The "Bold (extra)" entry must not be counted toward the expected-bold total.');
+    assert.equal(reportData.summary.blogContent?.boldText.extra, 1);
+  });
 });

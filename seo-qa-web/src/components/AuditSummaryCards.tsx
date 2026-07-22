@@ -27,6 +27,11 @@ export default function AuditSummaryCards({ summary, report }: Props) {
           <StatCard value={b.missingContent}    label="Missing Content"   tone={b.missingContent > 0 ? 'danger' : 'neutral'} />
           <StatCard value={b.modifiedContent}   label="Modified Content"  tone={b.modifiedContent > 0 ? 'warning' : 'neutral'} />
           <StatCard value={b.metadataIssues}    label="Metadata Issues"   tone={b.metadataIssues > 0 ? 'warning' : 'neutral'} />
+          <StatCard
+            value={`${b.boldText.passed}/${b.boldText.total}`}
+            label="Bold Text"
+            tone={b.boldText.missing > 0 || b.boldText.modified > 0 || b.boldText.extra > 0 ? 'danger' : 'success'}
+          />
         </div>
         <div className="stat-grid" style={{ marginTop: 0 }}>
           <StatCard value={redirectCount}       label="Redirects Checked" tone="neutral" />

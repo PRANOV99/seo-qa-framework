@@ -62,4 +62,21 @@ export interface BlogComparisonSummary {
   missingContent: number;
   modifiedContent: number;
   metadataIssues: number;
+  boldText: BoldTextSummary;
+}
+
+export interface BoldTextSummary {
+  /** Number of expected bold phrases evaluated (excludes "extra" bold found only on the live page). */
+  total: number;
+  passed: number;
+  missing: number;
+  /**
+   * Bold phrases that changed rather than being purely missing or extra.
+   * The current comparator only detects presence/absence (no fuzzy
+   * matching like paragraphs have), so this is always 0 today — kept so the
+   * summary shape doesn't need to change if that's added later.
+   */
+  modified: number;
+  /** Bold phrases present on the live page but not in the approved document. */
+  extra: number;
 }

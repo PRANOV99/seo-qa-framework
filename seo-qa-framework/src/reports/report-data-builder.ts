@@ -37,12 +37,18 @@ export function buildReportData(result: AuditRunResult): ReportData {
 
 const METADATA_CHECK_TYPES = new Set(['Meta Title', 'Meta Description']);
 
+// Bold-phrase check results use these checkType prefixes (see blog-comparator.ts
+// compareBoldPhrases) — "Bold (extra): …" deliberately does not match
+// BOLD_CHECK_PREFIX since it's a separate, warning-only category.
+const BOLD_CHECK_PREFIX = 'Bold:';
+const BOLD_EXTRA_PREFIX = 'Bold (extra)';
+
 /**
  * Summarizes a blog-validation run's checks into the QA report's requested
  * breakdown: Total Checks, Passed, Failed, Missing Content, Modified
- * Content, and Metadata Issues. "Missing" vs "Modified" is distinguished by
- * whether a live value was found at all (actual is empty) or differed from
- * the approved document.
+ * Content, Metadata Issues, and a dedicated Bold Text breakdown. "Missing"
+ * vs "Modified" is distinguished by whether a live value was found at all
+ * (actual is empty) or differed from the approved document.
  */
 function summarizeBlogContent(results: readonly SeoCheckResult[]): BlogComparisonSummary {
   const evaluated = results.filter((result) => result.status !== 'skipped');
@@ -52,13 +58,23 @@ function summarizeBlogContent(results: readonly SeoCheckResult[]): BlogCompariso
   const modifiedContent = failed.length - missingContent;
   const metadataIssues = failed.filter((result) => METADATA_CHECK_TYPES.has(result.checkType)).length;
 
+  const boldExpectedChecks = evaluated.filter((result) => result.checkType.startsWith(BOLD_CHECK_PREFIX));
+  const boldExtraChecks    = evaluated.filter((result) => result.checkType.startsWith(BOLD_EXTRA_PREFIX));
+
   return {
     totalChecks: evaluated.length,
     passed: evaluated.filter((result) => result.status === 'passed').length,
     failed: failed.length,
     missingContent,
     modifiedContent,
-    metadataIssues
+    metadataIssues,
+    boldText: {
+      total: boldExpectedChecks.length,
+      passed: boldExpectedChecks.filter((result) => result.status === 'passed').length,
+      missing: boldExpectedChecks.filter((result) => result.status === 'failed').length,
+      modified: 0,
+      extra: boldExtraChecks.length
+    }
   };
 }
 

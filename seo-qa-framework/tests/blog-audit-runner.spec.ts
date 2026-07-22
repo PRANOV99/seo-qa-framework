@@ -17,6 +17,7 @@ test.describe('BlogAuditRunner', () => {
   let baseUrl: string;
   let matchingPath: string;
   let mismatchedPath: string;
+  let headingEntitiesPath: string;
 
   test.beforeAll(async () => {
     server = createServer((req, res) => {
@@ -35,6 +36,32 @@ test.describe('BlogAuditRunner', () => {
                 <h1>How to Bake Sourdough Bread</h1>
                 <p>This is the introduction paragraph.</p>
                 <h2>Ingredients</h2>
+                <p>Flour, water, salt, and a starter.</p>
+              </article>
+            </body>
+          </html>`);
+        return;
+      }
+
+      if (req.url === '/blog/heading-entities') {
+        // Reproduces the reported bug verbatim: an H2 whose text is wrapped in a
+        // nested <span> and whose apostrophe is a numeric HTML entity (&#8217;).
+        res.end(`<!doctype html>
+          <html>
+            <head>
+              <title>Why Sri Sreenivasa Infra's Track Record Matters | Example Blog</title>
+              <meta name="description" content="Why Sri Sreenivasa Infra's track record matters for buyers.">
+              <link rel="canonical" href="${baseUrl}/blog/heading-entities">
+            </head>
+            <body>
+              <article>
+                <h1>Why Sri Sreenivasa Infra's Track Record Matters</h1>
+                <p>This is the introduction paragraph.</p>
+                <h2>
+                    <span style="font-weight:400;">
+                        Why Sri Sreenivasa Infra&#8217;s Track Record Matters Here
+                    </span>
+                </h2>
                 <p>Flour, water, salt, and a starter.</p>
               </article>
             </body>
@@ -63,6 +90,7 @@ test.describe('BlogAuditRunner', () => {
     baseUrl = `http://127.0.0.1:${address.port}`;
     matchingPath = `${baseUrl}/blog/matching`;
     mismatchedPath = `${baseUrl}/blog/mismatched`;
+    headingEntitiesPath = `${baseUrl}/blog/heading-entities`;
   });
 
   test.afterAll(async () => {
@@ -115,6 +143,32 @@ test.describe('BlogAuditRunner', () => {
       expect(missingHeading?.status).toBe('failed');
       expect(paragraphResult?.status).toBe('failed');
       expect(result.seoCheckResults.some((check) => check.status === 'passed')).toBe(true);
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
+
+  test('does not report an H2 as missing when the live page wraps it in a nested <span> with an HTML-entity apostrophe', async () => {
+    // End-to-end reproduction of the reported bug: the live page's H2 is
+    // "<h2><span style=\"font-weight:400;\">...Infra&#8217;s...</span></h2>" —
+    // a nested tag plus a numeric entity for a curly apostrophe — while the
+    // approved document uses a plain straight apostrophe.
+    const docxPath = await writeBlogDocx('heading-entities.docx', [
+      paragraph("Meta Title: Why Sri Sreenivasa Infra's Track Record Matters | Example Blog"),
+      paragraph("Meta Description: Why Sri Sreenivasa Infra's track record matters for buyers."),
+      heading(1, "Why Sri Sreenivasa Infra's Track Record Matters"),
+      paragraph('This is the introduction paragraph.'),
+      heading(2, "Why Sri Sreenivasa Infra's Track Record Matters Here"),
+      paragraph('Flour, water, salt, and a starter.')
+    ]);
+
+    try {
+      const runner = new BlogAuditRunner();
+      const result = await runner.run(docxPath, headingEntitiesPath);
+
+      const h2Result = result.seoCheckResults.find((check) => check.checkType === 'H2 #1');
+
+      expect(h2Result?.status).toBe('passed');
     } finally {
       await rm(path.dirname(docxPath), { recursive: true, force: true });
     }

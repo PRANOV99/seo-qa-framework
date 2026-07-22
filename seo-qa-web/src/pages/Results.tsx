@@ -6,7 +6,10 @@ import AuditSummaryCards from '../components/AuditSummaryCards';
 import SeoResultsTable from '../components/SeoResultsTable';
 import StatusBadge from '../components/StatusBadge';
 
-type Tab = 'overview' | 'seo' | 'redirects' | 'links' | 'accessibility' | 'lighthouse' | 'skipped';
+type Tab = 'overview' | 'seo' | 'redirects' | 'links' | 'accessibility' | 'lighthouse' | 'skipped' | 'bold';
+
+const BOLD_CHECK_PREFIX = 'Bold:';
+const BOLD_EXTRA_PREFIX = 'Bold (extra)';
 
 export default function Results() {
   const { id } = useParams<{ id: string }>();
@@ -39,10 +42,23 @@ export default function Results() {
 
   const { report, summary } = record;
   const isBlog = summary.kind === 'blog';
+
+  // Bold Text is always broken out into its own section for Blog Testing —
+  // derived directly from the check results, same as every other tab here.
+  const boldMatches  = report.seoCheckResults.filter(r => r.checkType.startsWith(BOLD_CHECK_PREFIX) && r.status === 'passed');
+  const boldMissing  = report.seoCheckResults.filter(r => r.checkType.startsWith(BOLD_CHECK_PREFIX) && r.status === 'failed');
+  const boldExtra    = report.seoCheckResults.filter(r => r.checkType.startsWith(BOLD_EXTRA_PREFIX));
+  // The current comparator only detects "missing"/"extra" bold phrases — there's no fuzzy
+  // "modified" match like paragraphs have — so this is always empty today.
+  const boldModified: typeof report.seoCheckResults = [];
+  const boldTotal  = boldMatches.length + boldMissing.length + boldExtra.length;
+  const boldPassed = boldMissing.length === 0 && boldModified.length === 0 && boldExtra.length === 0;
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'overview', label: 'Overview' },
     { key: 'seo', label: `${isBlog ? 'Content Checks' : 'SEO Checks'}`, count: report.seoCheckResults.length },
     ...(!isBlog ? [{ key: 'redirects' as Tab, label: 'Redirects', count: report.redirectResults.length }] : []),
+    ...(isBlog ? [{ key: 'bold' as Tab, label: 'Bold Text', count: boldTotal }] : []),
     { key: 'links', label: 'Broken Links', count: report.brokenLinkResults.length },
     { key: 'accessibility', label: 'Accessibility', count: report.accessibilityResults.length },
     { key: 'lighthouse', label: 'Lighthouse', count: report.lighthouseResults.length },
@@ -119,6 +135,76 @@ export default function Results() {
       )}
 
       {tab === 'seo' && <SeoResultsTable results={report.seoCheckResults} title={isBlog ? 'Content Checks' : 'SEO Checks'} />}
+
+      {tab === 'bold' && (
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">Bold Text</span>
+            <StatusBadge status={boldPassed ? 'passed' : 'failed'} />
+          </div>
+
+          {boldTotal === 0 ? (
+            <div className="empty-state" style={{ padding: 40 }}><div className="text-muted">No bold-phrase checks in this audit.</div></div>
+          ) : (
+            <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div style={{ display: 'flex', gap: 20, fontSize: 13, color: 'var(--text-muted)' }}>
+                <span><strong style={{ color: 'var(--text)' }}>{boldMatches.length}</strong> matched</span>
+                <span><strong style={{ color: 'var(--text)' }}>{boldMissing.length}</strong> missing</span>
+                <span><strong style={{ color: 'var(--text)' }}>{boldModified.length}</strong> modified</span>
+                <span><strong style={{ color: 'var(--text)' }}>{boldExtra.length}</strong> extra</span>
+              </div>
+
+              <div>
+                <div className="text-xs text-muted" style={{ marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Missing bold phrases</div>
+                {boldMissing.length === 0 ? (
+                  <div className="text-sm text-muted">None — every expected bold phrase was found.</div>
+                ) : (
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    {boldMissing.map((r, i) => (
+                      <li key={i} style={{ marginBottom: 6, fontSize: 13 }}>
+                        <span className="badge badge-danger" style={{ marginRight: 8 }}>MISSING</span>
+                        "{r.expected}"
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div>
+                <div className="text-xs text-muted" style={{ marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Modified bold phrases</div>
+                {boldModified.length === 0 ? (
+                  <div className="text-sm text-muted">None.</div>
+                ) : (
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    {boldModified.map((r, i) => (
+                      <li key={i} style={{ marginBottom: 6, fontSize: 13 }}>
+                        <span className="badge badge-warning" style={{ marginRight: 8 }}>MODIFIED</span>
+                        "{r.expected}" → "{r.actual}"
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div>
+                <div className="text-xs text-muted" style={{ marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Extra bold phrases</div>
+                {boldExtra.length === 0 ? (
+                  <div className="text-sm text-muted">None — no unapproved bold text found on the live page.</div>
+                ) : (
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    {boldExtra.map((r, i) => (
+                      <li key={i} style={{ marginBottom: 6, fontSize: 13 }}>
+                        <span className="badge badge-warning" style={{ marginRight: 8 }}>EXTRA</span>
+                        "{r.actual}"
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === 'redirects' && (
         <div className="section">

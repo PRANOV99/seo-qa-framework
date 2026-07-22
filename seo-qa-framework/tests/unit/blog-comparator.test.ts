@@ -111,6 +111,19 @@ describe('compareBlogContent — metadata', () => {
 
     assert.equal(metaDescResult?.status, 'skipped');
   });
+
+  it('PASSES Blog Title (H1) when the only difference is a curly vs straight apostrophe', () => {
+    const expected = exactMatch(baseExpected);
+    expected.title = "Baker's Guide to Sourdough Bread";
+
+    const actual = exactMatch(baseExpected);
+    actual.title = 'Baker’s Guide to Sourdough Bread';
+
+    const results  = compareBlogContent('https://example.com/blog/sourdough', expected, actual);
+    const h1Result = results.find((r) => r.checkType === 'Blog Title (H1)');
+
+    assert.equal(h1Result?.status, 'passed');
+  });
 });
 
 // ── Canonical URL comparisons ───────────────────────────────────────────────────
@@ -235,6 +248,54 @@ describe('compareBlogContent — headings', () => {
 
     assert.equal(methodResult?.status, 'failed');
     assert.match(methodResult?.message ?? '', /out of order/);
+  });
+
+  it('PASSES an H2 when the live page renders a curly apostrophe where the docx has a straight one', () => {
+    // Regression: reported bug — a live heading like
+    // "Why Sri Sreenivasa Infra’s Track Record Matters Here" (curly ’, often
+    // from a decoded &#8217; entity or CMS "smart quotes" rendering) was
+    // reported as MISSING against a docx heading using a straight apostrophe.
+    const expected: BlogContent = {
+      ...baseExpected,
+      h2Headings: ["Why Sri Sreenivasa Infra's Track Record Matters Here"]
+    };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['Why Sri Sreenivasa Infra’s Track Record Matters Here'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h2 = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(h2?.status, 'passed',
+      `Expected the curly-quote heading to match. Got: ${JSON.stringify(h2)}`);
+  });
+
+  it('PASSES an H3 with the same curly-vs-straight-apostrophe difference', () => {
+    const expected: BlogContent = {
+      ...baseExpected,
+      h3Headings: ["Reader's Guide to the Recipe"]
+    };
+    const actual = exactMatch(expected);
+    actual.h3Headings = ['Reader’s Guide to the Recipe'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h3 = results.find((r) => r.checkType === 'H3 #1');
+
+    assert.equal(h3?.status, 'passed');
+  });
+
+  it('still FAILS an H2 with a genuine wording difference, not just a quote-style one', () => {
+    const expected: BlogContent = {
+      ...baseExpected,
+      h2Headings: ["Why Sri Sreenivasa Infra's Track Record Matters Here"]
+    };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['A Completely Unrelated Heading'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h2 = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(h2?.status, 'failed');
+    assert.match(h2?.message ?? '', /missing from the live page/);
   });
 });
 
@@ -480,6 +541,61 @@ describe('compareBlogContent — hyperlinks', () => {
       linkResults.every((r) => r.status === 'passed'),
       'Extra links on the live page must not cause failures.'
     );
+  });
+
+  it('PASSES when the live page has multiple links to the same URL with different anchor text, as long as the expected pair exists somewhere', () => {
+    // Regression: the comparator used to key live links by URL only, so
+    // whichever link to a shared destination happened to be inserted last
+    // into that lookup would silently hide the others — causing a false
+    // "anchor text differs" failure even though the expected pair was
+    // genuinely present on the page.
+    const actual = exactMatch(baseExpected);
+    actual.links = [
+      // Decoy link to the same URL, but different (also legitimate) anchor text — inserted BEFORE the real match.
+      makeLink('Dutch oven buying guide', 'https://example.com/tools/dutch-oven'),
+      // The actual expected pair, present elsewhere on the page.
+      makeLink('Dutch oven recommendations', 'https://example.com/tools/dutch-oven'),
+      makeLink('sourdough starter guide', 'https://example.com/guides/starter')
+    ];
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const linkResults = results.filter((r) => r.checkType.startsWith('Hyperlink:'));
+
+    assert.ok(
+      linkResults.every((r) => r.status === 'passed'),
+      `Expected all hyperlinks to pass when the exact (text, URL) pair exists among several same-URL links. Got: ${JSON.stringify(linkResults)}`
+    );
+  });
+
+  it('PASSES regardless of how many other links share the same destination URL, checking every candidate not just the first', () => {
+    const actual = exactMatch(baseExpected);
+    actual.links = [
+      makeLink('some other label', 'https://example.com/tools/dutch-oven'),
+      makeLink('another label entirely', 'https://example.com/tools/dutch-oven'),
+      makeLink('yet another decoy', 'https://example.com/tools/dutch-oven'),
+      makeLink('Dutch oven recommendations', 'https://example.com/tools/dutch-oven'),
+      makeLink('sourdough starter guide', 'https://example.com/guides/starter')
+    ];
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const dutchOven = results.find((r) => r.expected?.includes('Dutch oven recommendations'));
+
+    assert.equal(dutchOven?.status, 'passed');
+  });
+
+  it('still FAILS with an anchor-text-mismatch message when no live link anywhere has the expected (text, URL) pair', () => {
+    const actual = exactMatch(baseExpected);
+    actual.links = [
+      // Same URL, but no live link anywhere uses the exact expected anchor text.
+      makeLink('completely different label', 'https://example.com/tools/dutch-oven'),
+      makeLink('sourdough starter guide', 'https://example.com/guides/starter')
+    ];
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const dutchOven = results.find((r) => r.expected?.includes('Dutch oven recommendations'));
+
+    assert.equal(dutchOven?.status, 'failed');
+    assert.match(dutchOven?.message ?? '', /anchor text differs/);
   });
 });
 

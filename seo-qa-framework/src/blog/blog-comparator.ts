@@ -74,7 +74,10 @@ function compareSingleValue(
   if (!normAct) {
     return { url, checkType, status: 'failed', expected, actual, message: missingMessage };
   }
-  if (normalizeForComparison(expected) !== normalizeForComparison(actual)) {
+  // Quote-normalized so typographic substitutions (e.g. a numeric &#8217;
+  // entity rendering as a curly apostrophe) don't by themselves fail this
+  // check — same treatment as paragraphs and headings.
+  if (normalizeQuotes(normalizeForComparison(expected)) !== normalizeQuotes(normalizeForComparison(actual))) {
     return {
       url, checkType, status: 'failed', expected, actual,
       message: `${checkType} has changed. Expected "${normExp}" but found "${normAct}".`
@@ -176,17 +179,27 @@ function normalizeSlugSegment(value: string): string {
 
 // ── Heading-list comparison ────────────────────────────────────────────────────
 
+/**
+ * Compares H2/H3 heading lists for presence and order.
+ *
+ * Matching is quote-normalized in addition to the usual whitespace/case
+ * normalization, so a typographic apostrophe substitution (e.g. a live page
+ * rendering a docx's straight `'` as a curly `’` — whether authored that way
+ * or produced by decoding a numeric `&#8217;` entity) does not by itself
+ * cause a heading that is genuinely present to be reported as missing.
+ */
 function compareHeadingList(
   url: string,
   label: string,
   expected: string[],
   actual: string[]
 ): SeoCheckResult[] {
-  const normalizedActual = actual.map(normalizeForComparison);
+  const headingKey = (value: string) => normalizeQuotes(normalizeForComparison(value));
+  const normalizedActual = actual.map(headingKey);
 
   return expected.map((expectedHeading, index) => {
     const checkType   = `${label} #${index + 1}`;
-    const normExpect  = normalizeForComparison(expectedHeading);
+    const normExpect  = headingKey(expectedHeading);
     const actualIndex = normalizedActual.indexOf(normExpect);
 
     if (actualIndex === -1) {
@@ -290,13 +303,22 @@ function compareParagraphs(
 // ── Hyperlink comparison ───────────────────────────────────────────────────────
 
 /**
- * For each expected hyperlink (from the docx), finds the best matching link
- * on the live page.
+ * For each expected hyperlink (from the docx), checks whether that exact
+ * (anchor text + URL) pair exists anywhere on the live page.
  *
  * Matching strategy (in priority order):
- *  1. URL match (canonical/normalised) → check if anchor text also matches.
- *  2. Anchor text match → report URL mismatch.
- *  3. Neither match → report as missing.
+ *  1. Exact (anchor text + URL) pair found anywhere on the live page → PASS.
+ *     This is checked against *every* live link, not just one link per URL,
+ *     so a page that legitimately has several links sharing the same
+ *     destination with different anchor text (e.g. "view pricing" and
+ *     "see plans" both pointing to /pricing) does not cause a false failure
+ *     for whichever of those anchor texts is actually expected.
+ *  2. No exact pair — but another live link shares the destination URL →
+ *     report an anchor-text mismatch (for diagnostics only; picks the first
+ *     such link found).
+ *  3. No exact pair — but another live link shares the anchor text →
+ *     report a destination-URL mismatch.
+ *  4. Neither → report as missing.
  *
  * Extra links on the live page (not in the docx) are not flagged — CMS
  * templates add breadcrumbs, related posts, share buttons, etc. that are
@@ -307,41 +329,57 @@ function compareLinks(
   expected: BlogLink[],
   actual: BlogLink[]
 ): SeoCheckResult[] {
-  const byUrl  = new Map<string, BlogLink>(actual.map((l) => [l.url,                             l]));
-  const byText = new Map<string, BlogLink>(actual.map((l) => [normalizeForComparison(l.text), l]));
+  const pairKey = (text: string, linkUrl: string) => `${normalizeForComparison(text)}||${linkUrl}`;
+
+  // Every (anchor text, URL) pair actually present on the live page.
+  const actualPairKeys = new Set(actual.map((l) => pairKey(l.text, l.url)));
+
+  // Grouped (not de-duped) lookups, used only to produce a helpful message
+  // when no exact pair match exists — multiple live links can legitimately
+  // share a URL or anchor text, so these intentionally keep every candidate
+  // rather than letting the last one silently overwrite the others.
+  const byUrl = new Map<string, BlogLink[]>();
+  const byText = new Map<string, BlogLink[]>();
+  for (const link of actual) {
+    (byUrl.get(link.url) ?? byUrl.set(link.url, []).get(link.url)!).push(link);
+    const textKey = normalizeForComparison(link.text);
+    (byText.get(textKey) ?? byText.set(textKey, []).get(textKey)!).push(link);
+  }
 
   return expected.map((expectedLink) => {
     const checkType       = `Hyperlink: "${paragraphPreview(expectedLink.text)}"`;
     const expectedDisplay = `${expectedLink.text} → ${expectedLink.url}`;
 
-    const foundByUrl = byUrl.get(expectedLink.url);
-    if (foundByUrl) {
-      const textMatch = normalizeForComparison(foundByUrl.text) === normalizeForComparison(expectedLink.text);
-      if (textMatch) {
-        return {
-          url, checkType, status: 'passed',
-          expected: expectedDisplay,
-          actual: `${foundByUrl.text} → ${foundByUrl.url}`,
-          message: 'Hyperlink matches the approved document.'
-        } satisfies SeoCheckResult;
-      }
+    if (actualPairKeys.has(pairKey(expectedLink.text, expectedLink.url))) {
       return {
-        url, checkType, status: 'failed',
+        url, checkType, status: 'passed',
         expected: expectedDisplay,
-        actual: `${foundByUrl.text} → ${foundByUrl.url}`,
-        message: `Hyperlink destination matches but anchor text differs. ` +
-                 `Expected "${expectedLink.text}" but found "${foundByUrl.text}".`
+        actual: expectedDisplay,
+        message: 'Hyperlink matches the approved document.'
       } satisfies SeoCheckResult;
     }
 
-    const foundByText = byText.get(normalizeForComparison(expectedLink.text));
-    if (foundByText) {
+    const sameUrl = byUrl.get(expectedLink.url);
+    if (sameUrl && sameUrl.length > 0) {
+      const found = sameUrl[0]!;
       return {
         url, checkType, status: 'failed',
         expected: expectedDisplay,
-        actual: `${foundByText.text} → ${foundByText.url}`,
+        actual: `${found.text} → ${found.url}`,
+        message: `Hyperlink destination matches but anchor text differs. ` +
+                 `Expected "${expectedLink.text}" but found "${found.text}".`
+      } satisfies SeoCheckResult;
+    }
+
+    const sameText = byText.get(normalizeForComparison(expectedLink.text));
+    if (sameText && sameText.length > 0) {
+      const found = sameText[0]!;
+      return {
+        url, checkType, status: 'failed',
+        expected: expectedDisplay,
+        actual: `${found.text} → ${found.url}`,
         message: `Hyperlink text matches but destination URL differs. ` +
-                 `Expected "${expectedLink.url}" but found "${foundByText.url}".`
+                 `Expected "${expectedLink.url}" but found "${found.url}".`
       } satisfies SeoCheckResult;
     }
 

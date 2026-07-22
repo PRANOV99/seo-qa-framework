@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { strToU8, zipSync } from 'fflate';
-import { parseBlogDocx } from '../../src/blog/docx-blog-parser.js';
+import { parseBlogDocx, htmlToText, decodeHtmlEntities } from '../../src/blog/docx-blog-parser.js';
 
 describe('parseBlogDocx', () => {
   it('extracts title (H1), H2s, H3s, body paragraphs, labeled Meta Title/Description paragraphs, hyperlinks, and bold phrases', async () => {
@@ -86,6 +86,60 @@ describe('parseBlogDocx', () => {
       'Metadata-only paragraphs must not appear in paragraphs[].');
   });
 
+  it('ignores decorative divider lines of any length, not just short ones', async () => {
+    // Regression: the old FORMATTING_ONLY regex capped at 10 characters, so
+    // longer real-world dividers (36+ chars, as content writers actually use
+    // before a metadata section) were NOT recognised and leaked through as
+    // real body paragraphs.
+    const dividers = [
+      '------------------------------------',
+      '____________________________________',
+      '====================================',
+      '************************************',
+      '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~',
+      '----------',
+      '______'
+    ];
+
+    const docxPath = await writeBlogDocx('long-dividers.docx', [
+      heading(1, 'My Post'),
+      paragraph('The real first article paragraph.'),
+      ...dividers.map((d) => paragraph(d)),
+      paragraph('Meta Title: My Post | Site'),
+      paragraph('The real second article paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, [
+      'The real first article paragraph.',
+      'The real second article paragraph.'
+    ], `Divider lines must never appear as paragraphs. Got: ${JSON.stringify(content.paragraphs)}`);
+  });
+
+  it('ignores a divider line even when surrounded by leading/trailing whitespace', async () => {
+    const docxPath = await writeBlogDocx('divider-with-whitespace.docx', [
+      heading(1, 'My Post'),
+      paragraph('   ------------------------------------   '),
+      paragraph('The only real paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['The only real paragraph.']);
+  });
+
+  it('does not mistake a real paragraph containing a hyphen for a divider line', async () => {
+    const docxPath = await writeBlogDocx('hyphenated-content.docx', [
+      heading(1, 'My Post'),
+      paragraph('This is a well-known, state-of-the-art approach to baking.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.paragraphs, ['This is a well-known, state-of-the-art approach to baking.']);
+  });
+
   it('captures "SEO Slug:" into expectedSlug', async () => {
     const docxPath = await writeBlogDocx('slug-label.docx', [
       heading(1, 'My Post'),
@@ -148,6 +202,66 @@ describe('parseBlogDocx', () => {
 
     assert.equal(content.expectedCanonicalUrl, 'https://example.com/blog/table-canonical');
     assert.equal(content.expectedSlug, 'table-based-slug');
+  });
+});
+
+// ── htmlToText / decodeHtmlEntities ─────────────────────────────────────────────
+//
+// These exercise the exact bug report: a heading whose rendered HTML wraps
+// the text in a nested <span> and encodes its apostrophe as a numeric HTML
+// entity. `htmlToText` is what the parser runs every block's innerHTML
+// through, so testing it directly with that real-world snippet is the most
+// precise way to confirm nested tags and entities are both handled.
+
+describe('htmlToText — nested tags', () => {
+  it('reproduces the reported bug: strips a nested <span> and decodes a numeric entity correctly', () => {
+    const html = '<span style="font-weight:400;">Why Sri Sreenivasa Infra&#8217;s Track Record Matters Here</span>';
+
+    assert.equal(htmlToText(html), 'Why Sri Sreenivasa Infra’s Track Record Matters Here');
+  });
+
+  it('strips <strong>/<b> tags while preserving their text content', () => {
+    assert.equal(htmlToText('This is <strong>very</strong> important and <b>bold</b> too.'),
+      'This is very important and bold too.');
+  });
+
+  it('strips <em>/<i> tags while preserving their text content', () => {
+    assert.equal(htmlToText('This is <em>emphasized</em> and <i>italic</i> too.'),
+      'This is emphasized and italic too.');
+  });
+
+  it('strips <a> tags while preserving their anchor text', () => {
+    assert.equal(htmlToText('Read our <a href="https://example.com/guide">full guide</a> for details.'),
+      'Read our full guide for details.');
+  });
+
+  it('strips arbitrarily deep nesting of mixed tags', () => {
+    assert.equal(
+      htmlToText('<span><strong><em><a href="https://example.com">Deeply Nested Heading</a></em></strong></span>'),
+      'Deeply Nested Heading'
+    );
+  });
+});
+
+describe('decodeHtmlEntities', () => {
+  it('decodes decimal numeric entities (e.g. curly apostrophe &#8217;)', () => {
+    assert.equal(decodeHtmlEntities('Infra&#8217;s'), 'Infra’s');
+  });
+
+  it('decodes hex numeric entities (e.g. &#x2019;)', () => {
+    assert.equal(decodeHtmlEntities('Infra&#x2019;s'), 'Infra’s');
+    assert.equal(decodeHtmlEntities('Infra&#X2019;s'), 'Infra’s', 'Hex entities should be matched case-insensitively.');
+  });
+
+  it('still decodes the previously-supported named entities (&amp;, &nbsp;, &lt;, &gt;, &quot;)', () => {
+    assert.equal(decodeHtmlEntities('Tom &amp; Jerry'), 'Tom & Jerry');
+    assert.equal(decodeHtmlEntities('a&nbsp;b'), 'a b');
+    assert.equal(decodeHtmlEntities('&lt;tag&gt;'), '<tag>');
+    assert.equal(decodeHtmlEntities('&quot;quoted&quot;'), '"quoted"');
+  });
+
+  it('decodes a straight-apostrophe numeric entity (&#39;) the same as before', () => {
+    assert.equal(decodeHtmlEntities('It&#39;s fine'), "It's fine");
   });
 });
 
@@ -222,6 +336,35 @@ describe('parseBlogDocx — bold phrase extraction', () => {
       `Expected "sourdough starter" in bold phrases. Got: ${JSON.stringify(content.boldPhrases)}`);
     assert.ok(content.boldPhrases.includes('Dutch oven baking'),
       `Expected "Dutch oven baking" in bold phrases. Got: ${JSON.stringify(content.boldPhrases)}`);
+  });
+});
+
+describe('parseBlogDocx — heading text extraction with inline formatting', () => {
+  it('extracts an H2 whose text is split across bold, italic, and hyperlink runs into one clean heading', async () => {
+    const docxPath = await writeBlogDocxHeadingWithRuns('heading-mixed-runs.docx', 2, [
+      { text: 'Why ' },
+      { text: 'Sri Sreenivasa Infra', bold: true },
+      { text: "'s " },
+      { text: 'Track Record', italic: true },
+      { text: ' ' },
+      { text: 'Matters Here', link: 'https://example.com/about' }
+    ]);
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog/x');
+
+    assert.deepEqual(content.h2Headings, ["Why Sri Sreenivasa Infra's Track Record Matters Here"]);
+  });
+
+  it('extracts an H3 with a bold+italic combined run correctly', async () => {
+    const docxPath = await writeBlogDocxHeadingWithRuns('heading-bold-italic.docx', 3, [
+      { text: 'Plain start, ' },
+      { text: 'bold and italic together', bold: true, italic: true },
+      { text: ', plain end.' }
+    ]);
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog/x');
+
+    assert.deepEqual(content.h3Headings, ['Plain start, bold and italic together, plain end.']);
   });
 });
 
@@ -409,6 +552,70 @@ async function writeBlogDocxWithBold(
     'word/document.xml':   strToU8(docXml)
   });
 
+  await writeFile(filePath, archive);
+  return filePath;
+}
+
+// ── Heading with mixed inline formatting (bold / italic / hyperlink runs) ──────
+
+interface HeadingRun {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  /** href — when set, the run is wrapped in a hyperlink instead of a plain/bold/italic run. */
+  link?: string;
+}
+
+async function writeBlogDocxHeadingWithRuns(
+  fileName: string,
+  headingLevel: 1 | 2 | 3,
+  runs: HeadingRun[]
+): Promise<string> {
+  const directory = path.join(tmpdir(), 'seo-qa-blog-docx-tests');
+  await mkdir(directory, { recursive: true });
+  const filePath = path.join(directory, `${Date.now()}-${Math.random().toString(36).slice(2)}-${fileName}`);
+
+  const relationships: Record<string, string> = {};
+  let nextRelId = 2;
+
+  const runsXml = runs
+    .map((run) => {
+      if (run.link) {
+        const relId = `rId${nextRelId++}`;
+        relationships[relId] = run.link;
+        return `<w:hyperlink r:id="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r></w:hyperlink>`;
+      }
+      const rPrParts = [run.bold ? '<w:b/>' : '', run.italic ? '<w:i/>' : ''].filter(Boolean).join('');
+      const rPr = rPrParts ? `<w:rPr>${rPrParts}</w:rPr>` : '';
+      return `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`;
+    })
+    .join('');
+
+  const bodyXml = `<w:p><w:pPr><w:pStyle w:val="Heading${headingLevel}"/></w:pPr>${runsXml}</w:p>`;
+
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>${bodyXml}</w:body>
+</w:document>`;
+
+  const files: Record<string, Uint8Array> = {
+    '[Content_Types].xml': strToU8(contentTypesXml),
+    '_rels/.rels':         strToU8(rootRelationshipsXml),
+    'word/document.xml':   strToU8(docXml)
+  };
+
+  if (Object.keys(relationships).length > 0) {
+    const relXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${Object.entries(relationships).map(([id, href]) =>
+    `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${href.replace(/"/g, '&quot;')}" TargetMode="External"/>`
+  ).join('\n  ')}
+</Relationships>`;
+    files['word/_rels/document.xml.rels'] = strToU8(relXml);
+  }
+
+  const archive = zipSync(files);
   await writeFile(filePath, archive);
   return filePath;
 }

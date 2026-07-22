@@ -13,8 +13,12 @@ const SLUG_LABEL      = /^(?:seo\s*slug|slug|permalink|url)\s*[:-]\s*(.*)$/i;
 // Metadata-only fields that must be stripped from the body paragraph list
 const METADATA_LABEL = /^(?:seo\s*slug|slug|canonical|redirect|author|category|tags?|published|date|focus\s*keyword|primary\s*keyword|schema|robots|noindex|url|permalink|alt\s*text)\s*[:-]/i;
 
-// Formatting-only paragraphs (dividers, empty lines, etc.)
-const FORMATTING_ONLY = /^[-=*_\s|]{0,10}$/;
+// Decorative separator/divider lines content writers place before metadata
+// sections (e.g. "------", "______", "======", "******", "~~~~~~~~~~~~") —
+// any length, never real content. Matched whenever the ENTIRE trimmed
+// paragraph consists solely of these characters (whitespace included, so a
+// divider surrounded by stray spaces is still recognised).
+const FORMATTING_ONLY = /^[-=*_~|\s]+$/;
 
 interface Block {
   tag: 'h1' | 'h2' | 'h3' | 'p' | 'table';
@@ -195,16 +199,42 @@ function extractBoldFromHtml(innerHtml: string): string[] {
   return phrases;
 }
 
-function htmlToText(html: string): string {
-  return normalizeText(decodeHtmlEntities(html.replace(/<[^>]+>/g, ' ')));
+/**
+ * Converts a fragment of HTML into its rendered plain-text content: every
+ * tag (however deeply nested — `<span>`, `<strong>`, `<b>`, `<em>`, `<i>`,
+ * `<a>`, …) is stripped, HTML entities are decoded, and whitespace is
+ * normalized. Exported for direct unit testing of entity/tag handling.
+ *
+ * Formatting tags are zero-width wrappers around text that already contains
+ * whatever real spaces the source document had, so they're stripped to
+ * nothing rather than a space — otherwise a bold/italic/link run that starts
+ * or ends mid-word (e.g. "Infra" bolded right up against an apostrophe:
+ * "Infra's") would gain a phantom space at the tag boundary ("Infra 's").
+ * `<br>` is the one exception: it is a genuine line-break/word-separator, so
+ * it's turned into a space rather than dropped.
+ */
+export function htmlToText(html: string): string {
+  return normalizeText(decodeHtmlEntities(
+    html
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+  ));
 }
 
-function decodeHtmlEntities(value: string): string {
+/**
+ * Decodes HTML entities: the handful of named entities mammoth/browsers
+ * commonly produce, plus ANY numeric character reference (decimal, e.g.
+ * `&#8217;` → ’, or hex, e.g. `&#x2019;` → ’) — covering typographic quotes,
+ * dashes, ellipses, and anything else that shows up encoded rather than as
+ * a raw Unicode character. Exported for direct unit testing.
+ */
+export function decodeHtmlEntities(value: string): string {
   return value
     .replace(/&nbsp;/g,  ' ')
     .replace(/&amp;/g,   '&')
     .replace(/&lt;/g,    '<')
     .replace(/&gt;/g,    '>')
     .replace(/&quot;/g,  '"')
-    .replace(/&#39;/g,   "'");
+    .replace(/&#(\d+);/g,            (_match, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-fA-F]+);/gi, (_match, code: string) => String.fromCodePoint(parseInt(code, 16)));
 }

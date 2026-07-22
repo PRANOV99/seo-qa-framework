@@ -206,6 +206,13 @@ export interface AuditSummary {
     missingContent: number;
     modifiedContent: number;
     metadataIssues: number;
+    boldText: {
+      total: number;
+      passed: number;
+      missing: number;
+      modified: number;
+      extra: number;
+    };
   };
 }
 
