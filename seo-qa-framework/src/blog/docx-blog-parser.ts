@@ -141,7 +141,7 @@ export function isDividerOnly(rawText: string): boolean {
 // ── Types ────────────────────────────────────────────────────────────────────────
 
 interface Block {
-  tag: 'h1' | 'h2' | 'h3' | 'h4' | 'p' | 'table';
+  tag: 'h1' | 'h2' | 'h3' | 'h4' | 'p' | 'table' | 'ul' | 'ol';
   /** Raw inner HTML of the block as produced by mammoth. */
   innerHtml: string;
 }
@@ -232,6 +232,21 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
   for (const block of blocks) {
     if (block.tag === 'table') {
       applyTableRows(block.innerHtml, fields);
+      continue;
+    }
+
+    if (block.tag === 'ul' || block.tag === 'ol') {
+      // A real Word bulleted/numbered list — mammoth renders it as a genuine
+      // <ul>/<ol>, unlike every other paragraph style (including "Quote"),
+      // which it renders as a plain <p> regardless of the Word style
+      // applied. Each item is its own piece of body content, on equal
+      // footing with a regular paragraph for comparison purposes.
+      for (const itemHtml of extractListItems(block.innerHtml)) {
+        const text = htmlToText(itemHtml);
+        if (!text || isDividerOnly(text)) continue;
+        paragraphs.push(text);
+        pushLinksAndBold(itemHtml);
+      }
       continue;
     }
 
@@ -370,13 +385,22 @@ function applyTableRows(tableHtml: string, fields: LabeledFields): void {
 
 function extractBlocks(html: string): Block[] {
   const blocks: Block[] = [];
-  for (const match of html.matchAll(/<(h1|h2|h3|h4|p|table)[^>]*>([\s\S]*?)<\/\1>/gi)) {
+  for (const match of html.matchAll(/<(h1|h2|h3|h4|p|table|ul|ol)[^>]*>([\s\S]*?)<\/\1>/gi)) {
     const tagName   = match[1];
     const innerHtml = match[2];
     if (tagName === undefined || innerHtml === undefined) continue;
     blocks.push({ tag: tagName.toLowerCase() as Block['tag'], innerHtml });
   }
   return blocks;
+}
+
+/** Extracts each top-level `<li>…</li>` item's inner HTML from a `<ul>`/`<ol>` block's inner HTML. */
+function extractListItems(innerHtml: string): string[] {
+  const items: string[] = [];
+  for (const match of innerHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+    items.push(match[1] ?? '');
+  }
+  return items;
 }
 
 /** Extracts hyperlinks from a block's inner HTML. */

@@ -19,8 +19,17 @@ const CONTENT_CONTAINER_SELECTORS = [
  * Playwright Page, using the same normalized BlogContent shape produced by
  * the docx extractor so the two can be compared field-by-field.
  *
- * Extraction is scoped to the blog's main content container (article/main/…)
- * so navigation, sidebar, footer, and related-post links/bold are excluded.
+ * Heading/bold/link extraction is scoped to the blog's main content
+ * container (article/main/…) so navigation, sidebar, footer, and
+ * related-post links/bold are excluded — those checks report every
+ * unexpected entry found (e.g. "Bold (extra)"), so a wide scope would
+ * flood a report with irrelevant site-chrome noise. Paragraph-type content
+ * (paragraphs, blockquotes, figure captions) is intentionally NOT scoped
+ * the same way: it is only ever matched against the approved document's own
+ * paragraphs (never reported as "extra"), and a page's lead/intro
+ * text is commonly placed in a header region outside the main content
+ * container — so widening its reach costs nothing and avoids false
+ * "missing" reports for that content.
  */
 export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
   const scope = await resolveContentScope(page);
@@ -38,7 +47,7 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
       // and an explicit aria-level instead of a literal <h4> tag — include
       // those so an FAQ heading that genuinely exists isn't missed.
       extractAllText(page, `${scope} h4, ${scope} [role="heading"][aria-level="4"]`),
-      extractAllText(page, `${scope} p`),
+      extractParagraphContent(page, scope),
       page.title(),
       page.$eval('meta[name="description"]', (el) => el.getAttribute('content')).catch(() => null),
       page.$eval('link[rel="canonical"]', (el) => el.getAttribute('href')).catch(() => null)
@@ -75,15 +84,39 @@ async function resolveContentScope(page: Page): Promise<string> {
   return 'body';
 }
 
+// Both helpers below read `textContent` rather than Playwright's
+// visibility-aware `innerText()` — matching how links/bold are already
+// extracted (see extractLinksFromPage/extractBoldFromPage). Content inside a
+// collapsed accordion panel, an inactive tab, or anything else hidden by
+// CSS/JS until a user interacts with it is still genuinely approved content;
+// `innerText()` silently omits it (it mirrors rendered layout), which would
+// make it look "missing" even though it exists verbatim in the page's HTML.
+
 async function extractText(page: Page, selector: string): Promise<string | null> {
-  const text = await page.locator(selector).first().innerText().catch(() => null);
+  const text = await page.$eval(selector, (el) => el.textContent ?? '').catch(() => null);
   return text ? normalizeText(text) : null;
 }
 
 async function extractAllText(page: Page, selector: string): Promise<string[]> {
-  return (await page.locator(selector).allInnerTexts())
-    .map((t) => normalizeText(t))
-    .filter((t) => t !== '');
+  const texts = await page.$$eval(selector, (els) => els.map((el) => el.textContent ?? ''));
+  return texts.map((t) => normalizeText(t)).filter((t) => t !== '');
+}
+
+/**
+ * Extracts every paragraph-equivalent piece of body text: `<p>` paragraphs,
+ * `<blockquote>` quoted passages, and `<figcaption>` image captions
+ * (page-wide — see the scoping note on extractLiveBlogContent), plus `<li>`
+ * list items (scoped to the content container, since `<li>` is also the
+ * building block of nav menus/footers and scoping it avoids treating those
+ * as blog content). Returned in document order via a single combined query,
+ * so mixed layouts (a paragraph immediately followed by a list, an
+ * introductory paragraph before the first heading, a blockquote between two
+ * paragraphs, …) preserve their real relative order for the "moved" check.
+ */
+async function extractParagraphContent(page: Page, scope: string): Promise<string[]> {
+  const selector = `p, blockquote, figcaption, ${scope} li`;
+  const texts = await page.$$eval(selector, (els) => els.map((el) => el.textContent ?? ''));
+  return texts.map((t) => normalizeText(t)).filter((t) => t !== '');
 }
 
 async function extractLinksFromPage(page: Page, scope: string, pageUrl: string): Promise<BlogLink[]> {

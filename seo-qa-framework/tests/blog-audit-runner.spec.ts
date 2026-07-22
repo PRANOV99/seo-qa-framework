@@ -18,6 +18,10 @@ test.describe('BlogAuditRunner', () => {
   let matchingPath: string;
   let mismatchedPath: string;
   let headingEntitiesPath: string;
+  let introOutsideScopePath: string;
+  let listLayoutPath: string;
+  let mixedBlocksPath: string;
+  let splitTextNodesPath: string;
 
   test.beforeAll(async () => {
     server = createServer((req, res) => {
@@ -69,6 +73,109 @@ test.describe('BlogAuditRunner', () => {
         return;
       }
 
+      if (req.url === '/blog/intro-outside-scope') {
+        // Reproduces the reported bug: the theme places the post header
+        // (H1 + lead/intro paragraphs) in a <header> OUTSIDE the <article>
+        // content container, with the rest of the body inside <article>.
+        res.end(`<!doctype html>
+          <html>
+            <head>
+              <title>Intro Outside Scope | Example Blog</title>
+              <meta name="description" content="A page whose intro paragraphs live outside the article tag.">
+              <link rel="canonical" href="${baseUrl}/blog/intro-outside-scope">
+            </head>
+            <body>
+              <header class="page-header">
+                <h1>Intro Outside Scope</h1>
+                <p>First introductory paragraph before any heading.</p>
+                <p>Second introductory paragraph, also before the first H2.</p>
+              </header>
+              <article>
+                <h2>Ingredients</h2>
+                <p>Flour, water, salt, and a starter.</p>
+              </article>
+            </body>
+          </html>`);
+        return;
+      }
+
+      if (req.url === '/blog/list-layout') {
+        // A paragraph introducing a bulleted list, followed by a normal
+        // paragraph — the exact "paragraph + UL/OL" layout reported as a
+        // false "missing" for the introducing sentence.
+        res.end(`<!doctype html>
+          <html>
+            <head>
+              <title>List Layout | Example Blog</title>
+              <meta name="description" content="A page whose body mixes paragraphs and a bulleted list.">
+              <link rel="canonical" href="${baseUrl}/blog/list-layout">
+            </head>
+            <body>
+              <article>
+                <h1>List Layout</h1>
+                <p>A well-rounded programme may include:</p>
+                <ul>
+                  <li>Item one</li>
+                  <li>Item two</li>
+                  <li>Item three</li>
+                </ul>
+                <p>A normal paragraph after the list.</p>
+              </article>
+            </body>
+          </html>`);
+        return;
+      }
+
+      if (req.url === '/blog/mixed-blocks') {
+        // Mixed block structure: paragraph, blockquote, figure/figcaption,
+        // and an accordion whose answer is hidden (display:none) until
+        // toggled — all of it approved content that must still compare
+        // correctly, not just plain sequential <p> tags.
+        res.end(`<!doctype html>
+          <html>
+            <head>
+              <title>Mixed Blocks | Example Blog</title>
+              <meta name="description" content="A page whose body mixes paragraphs, quotes, figures, and an accordion.">
+              <link rel="canonical" href="${baseUrl}/blog/mixed-blocks">
+            </head>
+            <body>
+              <article>
+                <h1>Mixed Blocks</h1>
+                <p>An ordinary paragraph leading into a quoted passage.</p>
+                <blockquote>A memorable quoted passage from a satisfied customer.</blockquote>
+                <figure>
+                  <img src="/photo.jpg" alt="A finished loaf of sourdough bread">
+                  <figcaption>The finished loaf, fresh out of the oven.</figcaption>
+                </figure>
+                <h4>Is financing available?</h4>
+                <p style="display:none;">Yes, financing is available through our partner lenders.</p>
+              </article>
+            </body>
+          </html>`);
+        return;
+      }
+
+      if (req.url === '/blog/split-text-nodes') {
+        // Gutenberg/CMS-style HTML where one logical paragraph's text is
+        // split across several nested inline elements rather than being one
+        // plain text node.
+        res.end(`<!doctype html>
+          <html>
+            <head>
+              <title>Split Text Nodes | Example Blog</title>
+              <meta name="description" content="A page whose paragraph text is split across nested inline elements.">
+              <link rel="canonical" href="${baseUrl}/blog/split-text-nodes">
+            </head>
+            <body>
+              <article>
+                <h1>Split Text Nodes</h1>
+                <p><span>Our </span><strong>award-winning</strong><span> team delivers </span><em>exceptional</em><span> results every time.</span></p>
+              </article>
+            </body>
+          </html>`);
+        return;
+      }
+
       // Mismatched page: different title, missing H2, and a modified paragraph.
       res.end(`<!doctype html>
         <html>
@@ -91,6 +198,10 @@ test.describe('BlogAuditRunner', () => {
     matchingPath = `${baseUrl}/blog/matching`;
     mismatchedPath = `${baseUrl}/blog/mismatched`;
     headingEntitiesPath = `${baseUrl}/blog/heading-entities`;
+    introOutsideScopePath = `${baseUrl}/blog/intro-outside-scope`;
+    listLayoutPath = `${baseUrl}/blog/list-layout`;
+    mixedBlocksPath = `${baseUrl}/blog/mixed-blocks`;
+    splitTextNodesPath = `${baseUrl}/blog/split-text-nodes`;
   });
 
   test.afterAll(async () => {
@@ -173,6 +284,105 @@ test.describe('BlogAuditRunner', () => {
       await rm(path.dirname(docxPath), { recursive: true, force: true });
     }
   });
+
+  test('does not report introductory paragraphs as missing when the theme places the post header outside <article>', async () => {
+    const docxPath = await writeBlogDocx('intro-outside-scope.docx', [
+      heading(1, 'Intro Outside Scope'),
+      paragraph('First introductory paragraph before any heading.'),
+      paragraph('Second introductory paragraph, also before the first H2.'),
+      heading(2, 'Ingredients'),
+      paragraph('Flour, water, salt, and a starter.')
+    ]);
+
+    try {
+      const runner = new BlogAuditRunner();
+      const result = await runner.run(docxPath, introOutsideScopePath);
+
+      const firstIntro  = result.seoCheckResults.find((check) => check.expected === 'First introductory paragraph before any heading.');
+      const secondIntro = result.seoCheckResults.find((check) => check.expected === 'Second introductory paragraph, also before the first H2.');
+
+      expect(firstIntro?.status).toBe('passed');
+      expect(secondIntro?.status).toBe('passed');
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
+
+  test('does not report the paragraph introducing a bulleted list as missing, and compares the list items too', async () => {
+    const docxPath = await writeBlogDocx('list-layout.docx', [
+      heading(1, 'List Layout'),
+      paragraph('A well-rounded programme may include:'),
+      list(['Item one', 'Item two', 'Item three']),
+      paragraph('A normal paragraph after the list.')
+    ]);
+
+    try {
+      const runner = new BlogAuditRunner();
+      const result = await runner.run(docxPath, listLayoutPath);
+
+      const intro   = result.seoCheckResults.find((check) => check.expected === 'A well-rounded programme may include:');
+      const item1   = result.seoCheckResults.find((check) => check.expected === 'Item one');
+      const item2   = result.seoCheckResults.find((check) => check.expected === 'Item two');
+      const item3   = result.seoCheckResults.find((check) => check.expected === 'Item three');
+      const after   = result.seoCheckResults.find((check) => check.expected === 'A normal paragraph after the list.');
+
+      expect(intro?.status).toBe('passed');
+      expect(item1?.status).toBe('passed');
+      expect(item2?.status).toBe('passed');
+      expect(item3?.status).toBe('passed');
+      expect(after?.status).toBe('passed');
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
+
+  test('correctly compares mixed block structures (blockquote, figcaption, and a collapsed accordion answer)', async () => {
+    const docxPath = await writeBlogDocx('mixed-blocks.docx', [
+      heading(1, 'Mixed Blocks'),
+      paragraph('An ordinary paragraph leading into a quoted passage.'),
+      paragraph('A memorable quoted passage from a satisfied customer.'),
+      heading(4, 'Is financing available?'),
+      paragraph('The finished loaf, fresh out of the oven.'),
+      paragraph('Yes, financing is available through our partner lenders.')
+    ]);
+
+    try {
+      const runner = new BlogAuditRunner();
+      const result = await runner.run(docxPath, mixedBlocksPath);
+
+      const quote      = result.seoCheckResults.find((check) => check.expected === 'A memorable quoted passage from a satisfied customer.');
+      const caption     = result.seoCheckResults.find((check) => check.expected === 'The finished loaf, fresh out of the oven.');
+      const faqQuestion = result.seoCheckResults.find((check) => check.checkType === 'H4 #1');
+      const hiddenAnswer = result.seoCheckResults.find((check) => check.expected === 'Yes, financing is available through our partner lenders.');
+
+      expect(quote?.status).toBe('passed');
+      expect(caption?.status).toBe('passed');
+      expect(faqQuestion?.status).toBe('passed');
+      expect(hiddenAnswer?.status).toBe('passed');
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
+
+  test('matches a paragraph whose live-page text is split across several nested inline elements (Gutenberg-style markup)', async () => {
+    const docxPath = await writeBlogDocx('split-text-nodes.docx', [
+      heading(1, 'Split Text Nodes'),
+      paragraph('Our award-winning team delivers exceptional results every time.')
+    ]);
+
+    try {
+      const runner = new BlogAuditRunner();
+      const result = await runner.run(docxPath, splitTextNodesPath);
+
+      const paragraphResult = result.seoCheckResults.find(
+        (check) => check.expected === 'Our award-winning team delivers exceptional results every time.'
+      );
+
+      expect(paragraphResult?.status).toBe('passed');
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
 });
 
 // --- Minimal .docx fixture builder (mirrors tests/unit/docx-blog-parser.test.ts) ---
@@ -180,35 +390,55 @@ test.describe('BlogAuditRunner', () => {
 interface ParagraphBlock {
   kind: 'paragraph';
   text: string;
-  headingLevel?: 1 | 2 | 3;
+  headingLevel?: 1 | 2 | 3 | 4;
 }
+
+interface ListBlock {
+  kind: 'list';
+  items: string[];
+}
+
+type DocBlock = ParagraphBlock | ListBlock;
 
 function paragraph(text: string): ParagraphBlock {
   return { kind: 'paragraph', text };
 }
 
-function heading(level: 1 | 2 | 3, text: string): ParagraphBlock {
+function heading(level: 1 | 2 | 3 | 4, text: string): ParagraphBlock {
   return { kind: 'paragraph', text, headingLevel: level };
 }
 
-async function writeBlogDocx(fileName: string, blocks: ParagraphBlock[]): Promise<string> {
+/** A real Word bulleted list (genuine numbering, not typed bullet characters) — mammoth renders this as a real `<ul>/<li>`, unlike every other paragraph style. */
+function list(items: string[]): ListBlock {
+  return { kind: 'list', items };
+}
+
+async function writeBlogDocx(fileName: string, blocks: DocBlock[]): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), 'seo-qa-blog-runner-spec-'));
   await mkdir(directory, { recursive: true });
   const filePath = path.join(directory, fileName);
 
-  const archive = zipSync({
-    '[Content_Types].xml': strToU8(contentTypesXml),
+  const hasList = blocks.some((block) => block.kind === 'list');
+
+  const files: Record<string, Uint8Array> = {
+    '[Content_Types].xml': strToU8(hasList ? contentTypesXmlWithNumbering : contentTypesXml),
     '_rels/.rels': strToU8(rootRelationshipsXml),
     'word/document.xml': strToU8(documentXml(blocks))
-  });
+  };
+  if (hasList) {
+    files['word/_rels/document.xml.rels'] = strToU8(documentRelationshipsXmlWithNumbering);
+    files['word/numbering.xml'] = strToU8(numberingXml);
+  }
+
+  const archive = zipSync(files);
 
   await writeFile(filePath, archive);
 
   return filePath;
 }
 
-function documentXml(blocks: ParagraphBlock[]): string {
-  const bodyXml = blocks.map(renderParagraph).join('');
+function documentXml(blocks: DocBlock[]): string {
+  const bodyXml = blocks.map(renderBlock).join('');
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -216,7 +446,15 @@ function documentXml(blocks: ParagraphBlock[]): string {
 </w:document>`;
 }
 
-function renderParagraph(block: ParagraphBlock): string {
+function renderBlock(block: DocBlock): string {
+  if (block.kind === 'list') {
+    return block.items
+      .map(
+        (item) =>
+          `<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${escapeXml(item)}</w:t></w:r></w:p>`
+      )
+      .join('');
+  }
   const styleXml = block.headingLevel ? `<w:pPr><w:pStyle w:val="Heading${block.headingLevel}"/></w:pPr>` : '';
   return `<w:p>${styleXml}<w:r><w:t>${escapeXml(block.text)}</w:t></w:r></w:p>`;
 }
@@ -241,3 +479,29 @@ const rootRelationshipsXml = `<?xml version="1.0" encoding="UTF-8" standalone="y
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`;
+
+const contentTypesXmlWithNumbering = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>`;
+
+const documentRelationshipsXmlWithNumbering = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>`;
+
+const numberingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#8226;"/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>`;
