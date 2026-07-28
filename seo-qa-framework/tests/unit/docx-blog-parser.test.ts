@@ -70,6 +70,61 @@ describe('parseBlogDocx', () => {
     assert.equal(content.title, 'A Blog Post With No Metadata Fields');
   });
 
+  it('falls back to an unlabeled first paragraph as the title when no "Title:"/"H1:" label or real Heading-1 style exists', async () => {
+    // Regression: a real-world content brief typed the blog title as the
+    // very first line with no label and no Word Heading-1 style at all —
+    // trusting a reader to infer it from position. Previously this left
+    // content.title undefined (H1 check silently skipped) and the title
+    // text sat in paragraphs[], always failing as "missing" since it
+    // renders as a heading on the live page, never as a body paragraph.
+    const docxPath = await writeBlogDocx('unlabeled-title-first-line.docx', [
+      paragraph('Benefits of Smart Farming Techniques in Modern Farmlands'),
+      paragraph('There was a time when farming felt simple to imagine.'),
+      heading(2, 'The Land Feels More Thoughtful Now'),
+      paragraph('One thing that stands out is how intentional everything feels.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.title, 'Benefits of Smart Farming Techniques in Modern Farmlands');
+    assert.deepEqual(content.paragraphs, [
+      'There was a time when farming felt simple to imagine.',
+      'One thing that stands out is how intentional everything feels.'
+    ], 'The claimed title line must not remain in paragraphs[].');
+  });
+
+  it('does NOT use the unlabeled-first-paragraph fallback when a real Word Heading-1 style already exists', async () => {
+    const docxPath = await writeBlogDocx('unlabeled-first-line-with-real-h1.docx', [
+      paragraph('An introductory line before the real heading.'),
+      heading(1, 'The Real Title'),
+      paragraph('The real first body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.title, 'The Real Title');
+    assert.deepEqual(content.paragraphs, [
+      'An introductory line before the real heading.',
+      'The real first body paragraph.'
+    ], 'A genuine intro paragraph must not be claimed as the title when a real H1 already exists.');
+  });
+
+  it('does NOT use the unlabeled-first-paragraph fallback when a "Title:" label already exists', async () => {
+    const docxPath = await writeBlogDocx('unlabeled-first-line-with-title-label.docx', [
+      paragraph('An introductory line before the label.'),
+      paragraph('Title: The Labeled Title'),
+      paragraph('The real first body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.title, 'The Labeled Title');
+    assert.deepEqual(content.paragraphs, [
+      'An introductory line before the label.',
+      'The real first body paragraph.'
+    ]);
+  });
+
   it('strips metadata-only lines (SEO Slug, dividers) so they never appear in paragraphs[]', async () => {
     const docxPath = await writeBlogDocx('metadata-lines.docx', [
       paragraph('Meta Title: My Post | Site'),
@@ -595,6 +650,45 @@ describe('parseBlogDocx — metadata field boundaries', () => {
     const content = await parseBlogDocx(docxPath);
 
     assert.deepEqual(content.paragraphs, ['The real body paragraph.']);
+  });
+
+  it('captures the value when a label is typed alone on its own line and the value follows on the next soft-broken line', async () => {
+    // Regression: a real-world content brief had "SEO Slug:", "Meta Title:",
+    // and "Meta Description:" each typed alone, followed by a Shift+Enter and
+    // the actual value on the next line within the SAME Word paragraph —
+    // e.g. "SEO Slug:<br/>my-post-slug" rather than "SEO Slug: my-post-slug"
+    // on one line. Previously the bare label line set the field to an empty
+    // string (silently claiming it) and the orphaned value line leaked into
+    // paragraphs[] as a bogus "missing paragraph" (the value never appears
+    // as real page content, since it's metadata).
+    const docxPath = await writeBlogDocx('label-value-on-next-line.docx', [
+      softBreakParagraph('SEO Slug:', 'my-post-slug'),
+      softBreakParagraph('Meta Title:', 'My Post Title'),
+      softBreakParagraph('Meta Description:', 'A description spanning the next line.'),
+      heading(1, 'My Post'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedSlug, 'my-post-slug');
+    assert.equal(content.metaTitle, 'My Post Title');
+    assert.equal(content.metaDescription, 'A description spanning the next line.');
+    assert.deepEqual(content.paragraphs, ['The real body paragraph.'],
+      'The orphaned value lines must not leak into paragraphs[].');
+  });
+
+  it('still stops a label-then-value split at a genuine following label, rather than swallowing it as the value', async () => {
+    const docxPath = await writeBlogDocx('label-alone-then-another-label.docx', [
+      softBreakParagraph('Meta Description:', 'Canonical: https://example.com/my-post'),
+      heading(1, 'My Post'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
+    assert.notEqual(content.metaDescription, 'Canonical: https://example.com/my-post');
   });
 });
 

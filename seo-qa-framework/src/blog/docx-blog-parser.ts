@@ -292,11 +292,30 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
       for (const segment of segments) pushLinksAndBold(segment);
     };
 
-    for (const htmlSegment of htmlLines) {
+    for (let i = 0; i < htmlLines.length; i++) {
+      const htmlSegment = htmlLines[i]!;
       const lineText = htmlToText(htmlSegment);
       if (!lineText) continue;
 
       if (isAnyLabeledField(lineText)) {
+        // A content writer sometimes types the label alone ("Meta
+        // Description:"), presses Shift+Enter, and puts the actual value on
+        // the NEXT soft-broken line — rather than "Meta Description: <value>"
+        // on one line. When the label line carries no value of its own,
+        // treat the following line as this label's value instead of letting
+        // it fall through untagged, where it would otherwise leak into
+        // paragraphs[] as a bogus body paragraph (and leave the field itself
+        // permanently stuck at an empty string, since a label with no value
+        // still "claims" the field).
+        if (isMetadataLabelPhrase(lineText) && i + 1 < htmlLines.length) {
+          const nextText = htmlToText(htmlLines[i + 1]!);
+          if (nextText && !isAnyLabeledField(nextText) && !isDividerOnly(nextText)) {
+            const labelWithSeparator = /[:\-–—]\s*$/.test(lineText) ? lineText : `${lineText}:`;
+            applyLabeledLine(`${labelWithSeparator} ${nextText}`, fields);
+            i++; // the value line is consumed as this label's value, not a separate line
+            continue;
+          }
+        }
         applyLabeledLine(lineText, fields);
         continue;
       }
@@ -322,7 +341,18 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
   // table) takes priority over a real Word H1 heading's text when both are
   // present, matching the label-authoring convention's intent — it's only a
   // fallback title source when the document has no real H1 heading at all.
-  const title = fields.h1 || headings.title || undefined;
+  let title = fields.h1 || headings.title || undefined;
+
+  // Last-resort fallback: some content briefs just type the blog title as
+  // the very first line, with no "Title:"/"H1:" label and no real Word
+  // Heading-1 style at all — trusting a reader to infer it's the title from
+  // its position alone. Only used when nothing else already established a
+  // title. The line is claimed as the title (not left in paragraphs[]),
+  // since it renders as a heading on the live page, not a body paragraph —
+  // left in place, it would always show up as a false "missing paragraph".
+  if (!title && paragraphs.length > 0) {
+    title = paragraphs.shift();
+  }
 
   return {
     title,

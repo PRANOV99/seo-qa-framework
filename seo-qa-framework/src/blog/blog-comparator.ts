@@ -26,8 +26,13 @@ export function compareBlogContent(
 ): SeoCheckResult[] {
   const results: SeoCheckResult[] = [
     // ── Metadata ─────────────────────────────────────────────────────────────
+    // Meta Title alone tolerates a trailing " – Site Name" (or "| Site
+    // Name", "- Site Name") suffix — WordPress/most SEO plugins auto-append
+    // this to the <title> tag, and a docx's approved value almost never
+    // includes it on purpose. Meta Description and H1 get no such leniency;
+    // that boilerplate is a <title>-tag-only convention.
     compareSingleValue(url, 'Meta Title',        expected.metaTitle,       actual.metaTitle,
-      'Meta title is missing from the live page.'),
+      'Meta title is missing from the live page.', { allowSiteNameSuffix: true }),
     compareSingleValue(url, 'Meta Description',  expected.metaDescription, actual.metaDescription,
       'Meta description is missing from the live page.'),
     // H1 is skipped ONLY when expected.title is absent — never when it has a value.
@@ -65,7 +70,8 @@ function compareSingleValue(
   checkType: string,
   expected: string | undefined,
   actual: string | undefined,
-  missingMessage: string
+  missingMessage: string,
+  options: { allowSiteNameSuffix?: boolean } = {}
 ): SeoCheckResult {
   const normExp = normalizeText(expected);
   const normAct = normalizeText(actual);
@@ -82,23 +88,51 @@ function compareSingleValue(
   // check — same treatment as paragraphs and headings. Edge punctuation
   // (a trailing period, etc.) is also ignored — a CMS adding or dropping one
   // on publish is a formatting nicety, not a wording change.
-  if (stripEdgePunctuation(normalizeQuotes(normalizeForComparison(expected)))
-      !== stripEdgePunctuation(normalizeQuotes(normalizeForComparison(actual)))) {
-    // Case-preserving, quote/edge-punctuation-normalized text for the diff
-    // itself, so the same insignificant differences that don't fail the
-    // check also never show up highlighted as if they were the change.
-    // expected/actual are guaranteed non-empty strings here — both normExp
-    // and normAct were already checked truthy above.
-    const display = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeText(value)));
-    const diff = computeWordDiff(display(expected!), display(actual!));
-    return {
-      url, checkType, status: 'failed', expected, actual,
-      message: `${checkType} has changed. Expected "${normExp}" but found "${normAct}".`,
-      diff
-    };
+  const expKey = stripEdgePunctuation(normalizeQuotes(normalizeForComparison(expected)));
+  const actKey = stripEdgePunctuation(normalizeQuotes(normalizeForComparison(actual)));
+
+  if (expKey === actKey) {
+    return { url, checkType, status: 'passed', expected, actual,
+             message: `${checkType} matches the approved document.` };
   }
-  return { url, checkType, status: 'passed', expected, actual,
-           message: `${checkType} matches the approved document.` };
+
+  if (options.allowSiteNameSuffix && hasSiteNameSuffix(expKey, actKey)) {
+    return { url, checkType, status: 'passed', expected, actual,
+             message: `${checkType} matches the approved document (a trailing site-name suffix was ignored).` };
+  }
+
+  // Case-preserving, quote/edge-punctuation-normalized text for the diff
+  // itself, so the same insignificant differences that don't fail the
+  // check also never show up highlighted as if they were the change.
+  // expected/actual are guaranteed non-empty strings here — both normExp
+  // and normAct were already checked truthy above.
+  const display = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeText(value)));
+  const diff = computeWordDiff(display(expected!), display(actual!));
+  return {
+    url, checkType, status: 'failed', expected, actual,
+    message: `${checkType} has changed. Expected "${normExp}" but found "${normAct}".`,
+    diff
+  };
+}
+
+/** Common separators a WordPress theme/SEO plugin uses to auto-append the site name to the <title> tag. */
+const SITE_NAME_SEPARATORS = [' - ', ' – ', ' — ', ' | '];
+
+/**
+ * True when `actualKey` is exactly `expectedKey` plus one of the common
+ * auto-appended "Site Name" suffixes ( " - Site Name", " – Site Name", " |
+ * Site Name", …) — boilerplate most WordPress themes/SEO plugins add to the
+ * live `<title>` tag that a docx's approved Meta Title almost never
+ * includes on purpose, since it isn't part of that page's actual approved
+ * copy. Both keys are already lowercased/whitespace-collapsed/quote- and
+ * edge-punctuation-normalized by the caller.
+ */
+function hasSiteNameSuffix(expectedKey: string, actualKey: string): boolean {
+  if (!expectedKey) return false;
+  return SITE_NAME_SEPARATORS.some((separator) => {
+    const prefix = expectedKey + separator;
+    return actualKey.startsWith(prefix) && actualKey.length > prefix.length;
+  });
 }
 
 // ── Canonical URL comparison ───────────────────────────────────────────────────

@@ -196,6 +196,57 @@ describe('compareBlogContent — metadata', () => {
 
     assert.equal(metaTitle?.status, 'passed', `Got: ${JSON.stringify(metaTitle)}`);
   });
+
+  it('PASSES Meta Title when the live page auto-appends a " – Site Name" suffix to the <title> tag', () => {
+    // Real-world case: WordPress/most SEO plugins & themes auto-append the
+    // site name to <title>. The approved docx value is the page's own
+    // title only — that boilerplate isn't part of its approved copy.
+    const expected = exactMatch(baseExpected);
+    expected.metaTitle = 'How to Bake Sourdough Bread';
+
+    for (const separator of [' - ', ' – ', ' — ', ' | ']) {
+      const actual = exactMatch(baseExpected);
+      actual.metaTitle = `How to Bake Sourdough Bread${separator}Example Blog`;
+
+      const results = compareBlogContent(BASE_URL, expected, actual);
+      const metaTitle = results.find((r) => r.checkType === 'Meta Title');
+
+      assert.equal(metaTitle?.status, 'passed',
+        `Separator "${separator}" should be tolerated as a site-name suffix. Got: ${JSON.stringify(metaTitle)}`);
+    }
+  });
+
+  it('still FAILS Meta Title for a genuine wording change even though it looks like a suffix pattern', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaTitle = 'How to Bake Sourdough Bread';
+
+    const actual = exactMatch(baseExpected);
+    actual.metaTitle = 'How to Bake Rye Bread - Example Blog'; // the PREFIX itself changed, not just a suffix appended
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const metaTitle = results.find((r) => r.checkType === 'Meta Title');
+
+    assert.equal(metaTitle?.status, 'failed', `Got: ${JSON.stringify(metaTitle)}`);
+  });
+
+  it('does NOT tolerate a site-name-style suffix on Meta Description or Blog Title (H1)', () => {
+    // The suffix convention is a <title>-tag-only WordPress/SEO-plugin
+    // pattern — it must not leak into other single-value checks.
+    const expected = exactMatch(baseExpected);
+    expected.metaDescription = 'Learn how to bake sourdough bread at home.';
+    expected.title = 'How to Bake Sourdough Bread';
+
+    const actual = exactMatch(baseExpected);
+    actual.metaDescription = 'Learn how to bake sourdough bread at home. - Example Blog';
+    actual.title = 'How to Bake Sourdough Bread - Example Blog';
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const metaDesc = results.find((r) => r.checkType === 'Meta Description');
+    const h1 = results.find((r) => r.checkType === 'Blog Title (H1)');
+
+    assert.equal(metaDesc?.status, 'failed', `Got: ${JSON.stringify(metaDesc)}`);
+    assert.equal(h1?.status, 'failed', `Got: ${JSON.stringify(h1)}`);
+  });
 });
 
 // ── Canonical URL comparisons ───────────────────────────────────────────────────
