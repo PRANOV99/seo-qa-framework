@@ -639,6 +639,25 @@ describe('parseBlogDocx — metadata field boundaries', () => {
     assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
   });
 
+  it('does not truncate a slug value that contains a hyphenated label-like word (e.g. "-slug-", "-url-", "-tag-")', async () => {
+    // Regression: the same-line "stop at the next label" safety net matched
+    // a recognized label word ANYWHERE in the value, not just at a genuine
+    // new label boundary — since a hyphen is itself a valid label
+    // separator, a slug like "my-post-slug-2026" got silently truncated to
+    // "my-post-" right at the embedded "-slug-". Real slugs routinely
+    // contain "slug"/"url"/"tag"/"date"/etc. as one of their hyphenated
+    // words, so this could corrupt a perfectly normal, single-label value.
+    const docxPath = await writeBlogDocx('slug-value-contains-label-word.docx', [
+      heading(1, 'My Post'),
+      paragraph('SEO Slug: my-post-slug-2026'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedSlug, 'my-post-slug-2026');
+  });
+
   it('excludes Focus Keyword and Alt Text lines from paragraphs[] entirely', async () => {
     const docxPath = await writeBlogDocx('focus-keyword-alt-text.docx', [
       heading(1, 'My Post'),
@@ -689,6 +708,52 @@ describe('parseBlogDocx — metadata field boundaries', () => {
 
     assert.equal(content.expectedCanonicalUrl, 'https://example.com/my-post');
     assert.notEqual(content.metaDescription, 'Canonical: https://example.com/my-post');
+  });
+
+  it('captures the value when a label ends one Word paragraph and its value is an entirely separate, fully-bolded following paragraph', async () => {
+    // Regression, reproducing a real-world docx exactly: a content brief ran
+    // a bolded "Slug:" onto the tail of the Meta Description paragraph (a
+    // stray label with no value of its own on that same soft-broken line),
+    // with the actual slug value as its own, entirely bolded Word
+    // paragraph — a hard paragraph break between the label and its value,
+    // one level up from the soft-line-break case above. Previously the bare
+    // "Slug:" line claimed expectedSlug as an empty string, and the
+    // separate value paragraph leaked into BOTH paragraphs[] and
+    // boldPhrases[] as a fake "missing" URL-slug-shaped paragraph and bold
+    // phrase.
+    const bodyXml =
+      '<w:p><w:r><w:t xml:space="preserve">Meta Description: Discover why this matters.</w:t></w:r>' +
+      '<w:r><w:br/></w:r>' +
+      '<w:r><w:rPr><w:b/></w:rPr><w:t>Slug:</w:t></w:r></w:p>' +
+      '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>my-post-slug-2026</w:t></w:r></w:p>' +
+      '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>My Post</w:t></w:r></w:p>' +
+      '<w:p><w:r><w:t>The real body paragraph.</w:t></w:r></w:p>';
+    const docxPath = await writeRawBlogDocx('label-tail-then-separate-bold-paragraph.docx', bodyXml);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.expectedSlug, 'my-post-slug-2026');
+    assert.equal(content.metaDescription, 'Discover why this matters.');
+    assert.deepEqual(content.paragraphs, ['The real body paragraph.'],
+      'The separate value paragraph must not leak into paragraphs[].');
+    assert.ok(!content.boldPhrases.includes('my-post-slug-2026'),
+      'The separate, fully-bolded value paragraph must not leak into boldPhrases[] either.');
+  });
+
+  it('does NOT swallow a genuine following heading as a trailing bare label\'s value', async () => {
+    const docxPath = await writeBlogDocx('label-tail-then-real-heading.docx', [
+      softBreakParagraph(
+        'Meta Description: Discover why this matters.',
+        'Slug:'
+      ),
+      heading(2, 'A Genuine Section Heading'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.deepEqual(content.h2Headings, ['A Genuine Section Heading'],
+      'A real heading immediately after a trailing bare label must still be extracted as a heading, not consumed as the label\'s value.');
   });
 });
 
@@ -1116,6 +1181,27 @@ async function writeBlogDocxWithRelationships(
     '_rels/.rels':                  strToU8(rootRelationshipsXml),
     'word/document.xml':            strToU8(docXml),
     'word/_rels/document.xml.rels': strToU8(relXml)
+  });
+
+  await writeFile(filePath, archive);
+  return filePath;
+}
+
+/** Builds a docx from raw Word body XML directly — for the rare fixture that needs precise control (e.g. a bold run split by a soft line break) beyond what the paragraph()/heading()/softBreakParagraph() helpers express. */
+async function writeRawBlogDocx(fileName: string, bodyXml: string): Promise<string> {
+  const directory = path.join(tmpdir(), 'seo-qa-blog-docx-tests');
+  await mkdir(directory, { recursive: true });
+  const filePath = path.join(directory, `${Date.now()}-${Math.random().toString(36).slice(2)}-${fileName}`);
+
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>${bodyXml}</w:body>
+</w:document>`;
+
+  const archive = zipSync({
+    '[Content_Types].xml': strToU8(contentTypesXml),
+    '_rels/.rels': strToU8(rootRelationshipsXml),
+    'word/document.xml': strToU8(docXml)
   });
 
   await writeFile(filePath, archive);

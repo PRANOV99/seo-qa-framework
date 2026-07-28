@@ -38,13 +38,19 @@ const LABEL_SEPARATOR = '[:\\-\\u2013\\u2014]';
 const ANY_LABEL_LINE = new RegExp(`^\\s*(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}`, 'i');
 
 /**
- * Matches the start of a (different) recognized label anywhere in a string —
- * used to stop a label's captured value before it runs into the next label,
- * for the rare case where two labels end up on the same physical line (e.g.
- * "Canonical: https://... Focus Keyword: something" with no line break
- * between them at all).
+ * Matches the start of a (different) recognized label — either at the very
+ * start of the string, or preceded by whitespace — used to stop a label's
+ * captured value before it runs into the next label, for the rare case
+ * where two labels end up on the same physical line (e.g. "Canonical:
+ * https://... Focus Keyword: something" with no line break between them at
+ * all). Requiring whitespace (not just any position) before the label is
+ * essential: without it, this matches label words as mid-string substrings
+ * of the value itself — a URL slug containing "slug", "url", "tag",
+ * "date", etc. as one of its hyphenated words (e.g.
+ * "my-post-slug-2026") would otherwise get silently truncated right there,
+ * since a hyphen is itself a recognized label separator.
  */
-const NEXT_LABEL_START = new RegExp(`(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}`, 'i');
+const NEXT_LABEL_START = new RegExp(`(?:^|\\s)(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}`, 'i');
 
 /** A phrase that is JUST a metadata label (optionally with its trailing separator) and nothing else — used to keep labels out of bold validation. */
 const METADATA_LABEL_PHRASE = new RegExp(`^\\s*(?:${ALL_LABELS})\\s*${LABEL_SEPARATOR}?\\s*$`, 'i');
@@ -229,7 +235,8 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
     );
   };
 
-  for (const block of blocks) {
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+    const block = blocks[blockIndex]!;
     if (block.tag === 'table') {
       applyTableRows(block.innerHtml, fields);
       continue;
@@ -298,22 +305,41 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
       if (!lineText) continue;
 
       if (isAnyLabeledField(lineText)) {
-        // A content writer sometimes types the label alone ("Meta
-        // Description:"), presses Shift+Enter, and puts the actual value on
-        // the NEXT soft-broken line — rather than "Meta Description: <value>"
-        // on one line. When the label line carries no value of its own,
-        // treat the following line as this label's value instead of letting
-        // it fall through untagged, where it would otherwise leak into
-        // paragraphs[] as a bogus body paragraph (and leave the field itself
-        // permanently stuck at an empty string, since a label with no value
-        // still "claims" the field).
-        if (isMetadataLabelPhrase(lineText) && i + 1 < htmlLines.length) {
-          const nextText = htmlToText(htmlLines[i + 1]!);
-          if (nextText && !isAnyLabeledField(nextText) && !isDividerOnly(nextText)) {
-            const labelWithSeparator = /[:\-–—]\s*$/.test(lineText) ? lineText : `${lineText}:`;
-            applyLabeledLine(`${labelWithSeparator} ${nextText}`, fields);
-            i++; // the value line is consumed as this label's value, not a separate line
-            continue;
+        if (isMetadataLabelPhrase(lineText)) {
+          // A content writer sometimes types the label alone ("Meta
+          // Description:"), presses Shift+Enter, and puts the actual value
+          // on the NEXT soft-broken line — rather than "Meta Description:
+          // <value>" on one line. When the label line carries no value of
+          // its own, treat the following line as this label's value instead
+          // of letting it fall through untagged, where it would otherwise
+          // leak into paragraphs[] as a bogus body paragraph (and leave the
+          // field itself permanently stuck at an empty string, since a
+          // label with no value still "claims" the field).
+          if (i + 1 < htmlLines.length) {
+            const nextText = htmlToText(htmlLines[i + 1]!);
+            if (nextText && !isAnyLabeledField(nextText) && !isDividerOnly(nextText)) {
+              applyLabelWithSeparateValue(lineText, nextText, fields);
+              i++; // the value line is consumed as this label's value, not a separate line
+              continue;
+            }
+          } else if (blockIndex + 1 < blocks.length) {
+            // The bare label is the LAST line of this block, with nothing
+            // left to check within it — the value may be the ENTIRE next
+            // block instead. Real-world docs sometimes run a label onto the
+            // tail of an unrelated paragraph (e.g. a stray "Slug:" appended
+            // after the Meta Description text) with the value itself
+            // starting a whole new Word paragraph, i.e. a hard paragraph
+            // break rather than a soft line break — the same leak, just one
+            // level up.
+            const nextBlock = blocks[blockIndex + 1]!;
+            if (nextBlock.tag === 'p') {
+              const nextBlockText = splitHtmlByBr(nextBlock.innerHtml).map(htmlToText).filter(Boolean).join(' ');
+              if (nextBlockText && !isAnyLabeledField(nextBlockText) && !isDividerOnly(nextBlockText)) {
+                applyLabelWithSeparateValue(lineText, nextBlockText, fields);
+                blockIndex++; // the whole next block is consumed as this label's value
+                continue;
+              }
+            }
           }
         }
         applyLabeledLine(lineText, fields);
@@ -374,6 +400,12 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
 /** Splits a block's inner HTML on `<br>` boundaries, preserving the HTML (tags intact) on either side — used so link/bold extraction still sees real markup within each resulting "line". */
 function splitHtmlByBr(innerHtml: string): string[] {
   return innerHtml.split(/<br\s*\/?>/gi);
+}
+
+/** Applies a bare label line (e.g. "Slug:") together with a value that was found separately (a following soft-broken line, or an entire following block) — reattaches a separator if the label line didn't already end with one, then delegates to applyLabeledLine as if they'd always been written on one line. */
+function applyLabelWithSeparateValue(labelLine: string, value: string, fields: LabeledFields): void {
+  const labelWithSeparator = /[:\-–—]\s*$/.test(labelLine) ? labelLine : `${labelLine}:`;
+  applyLabeledLine(`${labelWithSeparator} ${value}`, fields);
 }
 
 function applyLabeledLine(line: string, fields: LabeledFields): void {
