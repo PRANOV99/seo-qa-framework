@@ -11,15 +11,20 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+function canRerun(r: AuditRecord): boolean {
+  return r.type === 'blog' && r.status === 'completed' && Boolean(r.hasExpectedContent);
+}
+
 export default function History() {
   const navigate = useNavigate();
   const [records, setRecords] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch]   = useState('');
   const [typeFilter, setType] = useState('all');
-  const [selected, setSelected] = useState<string[]>([]);
 
-  const [rerunSelected, setRerunSelected] = useState<string[]>([]);
+  // One selection drives both actions: Compare (needs exactly 2, any type)
+  // and Re-run (any number of blogs that have their approved content saved).
+  const [selected, setSelected] = useState<string[]>([]);
   const [rerunSubmitting, setRerunSubmitting] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [rerunSkipped, setRerunSkipped] = useState<string[] | null>(null);
@@ -40,12 +45,14 @@ export default function History() {
     });
   }, [records, search, typeFilter]);
 
-  function toggleSelect(id: string) {
-    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : s.length >= 2 ? [s[1]!, id] : [...s, id]);
-  }
+  const recordsById = useMemo(() => new Map(records.map(r => [r.id, r])), [records]);
+  const rerunEligibleSelected = useMemo(
+    () => selected.filter(id => { const r = recordsById.get(id); return r && canRerun(r); }),
+    [selected, recordsById]
+  );
 
-  function toggleRerunSelect(id: string) {
-    setRerunSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  function toggleSelect(id: string) {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
   }
 
   async function runRerun(auditIds: string[]) {
@@ -55,12 +62,7 @@ export default function History() {
     setRerunSkipped(null);
     try {
       const { batchId, skipped } = await postRerunBatch(auditIds);
-      if (skipped.length > 0) {
-        // Some selected blogs couldn't be re-run (predate this feature,
-        // deleted, etc.) — let the user see why before jumping to the
-        // batch results for whatever DID get queued.
-        setRerunSkipped(skipped);
-      }
+      if (skipped.length > 0) setRerunSkipped(skipped);
       navigate(`/results/batch/${batchId}`);
     } catch (err) {
       setRerunError(err instanceof Error ? err.message : String(err));
@@ -76,34 +78,29 @@ export default function History() {
         <p>Browse, view, download, and compare all previous audit runs.</p>
       </div>
 
-      {/* Compare banner */}
-      {selected.length === 2 && (
+      {/* Unified selection banner — Compare and/or Re-run, depending on what's selected */}
+      {selected.length > 0 && (
         <div className="alert alert-info" style={{ marginBottom: 16, justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-          <span>✓ Two audits selected for comparison.</span>
-          <Link
-            to={`/compare?a=${encodeURIComponent(selected[0]!)}&b=${encodeURIComponent(selected[1]!)}`}
-            className="btn btn-primary btn-sm"
-          >
-            <GitCompare size={13} /> Compare These Audits
-          </Link>
-        </div>
-      )}
-      {selected.length === 1 && (
-        <div className="alert alert-info" style={{ marginBottom: 16 }}>
-          <span>Select one more audit to compare.</span>
-        </div>
-      )}
-
-      {/* Re-run banner */}
-      {rerunSelected.length > 0 && (
-        <div className="alert alert-info" style={{ marginBottom: 16, justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-          <span>🔁 {rerunSelected.length} blog{rerunSelected.length !== 1 ? 's' : ''} selected to re-run.</span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setRerunSelected([])} disabled={rerunSubmitting}>
+          <span>
+            ✓ {selected.length} audit{selected.length !== 1 ? 's' : ''} selected
+            {selected.length !== 2 && rerunEligibleSelected.length === 0 && ' — select exactly 2 to compare, or any number of blogs to re-run.'}
+          </span>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {rerunEligibleSelected.length > 0 && (
+              <button className="btn btn-primary btn-sm" onClick={() => void runRerun(rerunEligibleSelected)} disabled={rerunSubmitting}>
+                {rerunSubmitting ? 'Starting…' : `🔁 Re-run (${rerunEligibleSelected.length})`}
+              </button>
+            )}
+            {selected.length === 2 && (
+              <Link
+                to={`/compare?a=${encodeURIComponent(selected[0]!)}&b=${encodeURIComponent(selected[1]!)}`}
+                className="btn btn-outline btn-sm"
+              >
+                <GitCompare size={13} /> Compare These Audits
+              </Link>
+            )}
+            <button className="btn btn-ghost btn-sm" onClick={() => setSelected([])} disabled={rerunSubmitting}>
               Clear
-            </button>
-            <button className="btn btn-primary btn-sm" onClick={() => void runRerun(rerunSelected)} disabled={rerunSubmitting}>
-              {rerunSubmitting ? 'Starting…' : `Re-run Selected (${rerunSelected.length})`}
             </button>
           </div>
         </div>
@@ -135,9 +132,6 @@ export default function History() {
           <option value="sheet">Recommendation Sheets</option>
           <option value="blog">Blog Audits</option>
         </select>
-        {selected.length > 0 && (
-          <button className="btn btn-ghost btn-sm" onClick={() => setSelected([])}>Clear selection</button>
-        )}
       </div>
 
       {loading ? (
@@ -161,14 +155,13 @@ export default function History() {
         <div className="section">
           <div className="section-header">
             <span className="section-title">{filtered.length} audit{filtered.length !== 1 ? 's' : ''}</span>
-            <span className="text-xs text-muted">Compare: select up to 2 · Re-run: select any number of blogs</span>
+            <span className="text-xs text-muted">Select any number: 2 selected enables Compare, any blogs enable Re-run</span>
           </div>
           <div className="table-wrapper" style={{ border: 'none', borderRadius: 0 }}>
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 36 }} title="Select for comparison"></th>
-                  <th style={{ width: 36 }} title="Select to re-run">🔁</th>
+                  <th style={{ width: 36 }}></th>
                   <th>Type</th>
                   <th>Source</th>
                   <th>Passed</th>
@@ -181,12 +174,11 @@ export default function History() {
               <tbody>
                 {filtered.map(r => {
                   const isSelected = selected.includes(r.id);
-                  const canRerun = r.type === 'blog' && r.status === 'completed' && r.hasExpectedContent;
-                  const isRerunSelected = rerunSelected.includes(r.id);
+                  const eligibleForRerun = canRerun(r);
                   const passed = r.summary?.seoChecks?.passed ?? 0;
                   const failed = r.summary?.seoChecks?.failed ?? 0;
                   return (
-                    <tr key={r.id} style={{ background: isSelected || isRerunSelected ? '#f0f4ff' : undefined }}>
+                    <tr key={r.id} style={{ background: isSelected ? '#f0f4ff' : undefined }}>
                       <td>
                         <input
                           type="checkbox"
@@ -196,17 +188,6 @@ export default function History() {
                         />
                       </td>
                       <td>
-                        {canRerun && (
-                          <input
-                            type="checkbox"
-                            checked={isRerunSelected}
-                            onChange={() => toggleRerunSelect(r.id)}
-                            title="Select to re-run"
-                            style={{ cursor: 'pointer', accentColor: 'var(--primary)', width: 15, height: 15 }}
-                          />
-                        )}
-                      </td>
-                      <td>
                         <span className={`badge ${r.type === 'blog' ? 'badge-info' : 'badge-neutral'}`}>
                           {r.type === 'blog' ? '📝 Blog' : '📊 Sheet'}
                         </span>
@@ -214,6 +195,11 @@ export default function History() {
                       <td>
                         <div style={{ fontWeight: 500, fontSize: 13 }}>{r.filename}</div>
                         {r.url && <div className="text-xs text-muted" style={{ marginTop: 2, wordBreak: 'break-all', maxWidth: 260 }}>{r.url}</div>}
+                        {r.type === 'blog' && r.status === 'completed' && !eligibleForRerun && (
+                          <div className="text-xs text-muted" style={{ marginTop: 2, fontStyle: 'italic' }}>
+                            Can't re-run — tested before this feature was added
+                          </div>
+                        )}
                       </td>
                       <td>
                         <span style={{ color: 'var(--success)', fontWeight: 600 }}>
@@ -238,7 +224,7 @@ export default function History() {
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap' }}>
                           <Link to={`/history/${r.id}`} className="btn btn-outline btn-sm">View</Link>
-                          {canRerun && (
+                          {eligibleForRerun && (
                             <button
                               className="btn btn-ghost btn-sm"
                               title="Re-run this blog now"

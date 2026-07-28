@@ -165,6 +165,28 @@ export default function Upload() {
     }
   }, [addBlogFiles]);
 
+  /**
+   * Handles the very first file pick (before the audit type is known),
+   * which now allows selecting several files at once. When every picked
+   * file is a .docx, the whole selection is treated as one Blog Testing
+   * batch straight away — no need to pick one file, wait for the mode
+   * switch, then go back and add the rest one at a time. A sheet audit is
+   * still single-file, so a non-all-.docx selection just uses the first
+   * file exactly as before.
+   */
+  const handleFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    if (files.length > 1 && files.every(f => detectType(f.name) === 'blog')) {
+      setError('');
+      setParseError('');
+      setFile(null);
+      setAuditType('blog');
+      addBlogFiles(files);
+      return;
+    }
+    void handleFile(files[0]!);
+  }, [addBlogFiles, handleFile]);
+
   function toggleModule(key: keyof Modules) {
     if (key === 'seo') return; // always on
     setModules(m => ({ ...m, [key]: !m[key] }));
@@ -321,7 +343,11 @@ export default function Upload() {
 
             {auditType !== 'blog' && (
               <>
-                <DropZone onFile={handleFile} />
+                <DropZone
+                  multiple
+                  onFiles={handleFiles}
+                  hint={`Supported: .xlsx, .csv — one at a time, or select up to ${maxBatchSize} .docx files at once for Blog Testing`}
+                />
                 {parseInFlight && (
                   <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
                     <div className="spinner" /> Parsing sheet to extract URLs…
