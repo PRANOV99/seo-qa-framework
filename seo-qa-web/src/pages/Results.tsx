@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Download, ArrowLeft, ExternalLink } from 'lucide-react';
-import { getRun, downloadUrl, type AuditRecord } from '../lib/api';
+import { Download, Bug, ArrowLeft, ExternalLink } from 'lucide-react';
+import { getRun, downloadUrl, devBugReportUrl, type AuditRecord } from '../lib/api';
 import AuditSummaryCards from '../components/AuditSummaryCards';
 import SeoResultsTable from '../components/SeoResultsTable';
 import StatusBadge from '../components/StatusBadge';
@@ -73,6 +73,15 @@ export default function Results() {
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>{record.filename}</h1>
           {record.url && <div className="text-muted text-sm">{record.url}</div>}
         </div>
+        <a
+          href={devBugReportUrl(record.id)}
+          download={`bug-report-${record.id}.md`}
+          className="btn btn-primary btn-sm"
+          target="_blank" rel="noopener noreferrer"
+          title="A Markdown report of every mismatch, ready to hand to a developer or paste into Claude/an AI coding assistant."
+        >
+          <Bug size={14} /> Download Bug Report
+        </a>
         <a
           href={downloadUrl(record.id)}
           download={`${record.id}.json`}

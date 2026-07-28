@@ -11,6 +11,8 @@ import { AuditRunner } from '../../src/runner/audit-runner.js';
 import { BlogAuditRunner } from '../../src/runner/blog-audit-runner.js';
 import { BlogBatchRunner, type BlogBatchItem } from '../../src/runner/blog-batch-runner.js';
 import { buildReportData } from '../../src/reports/report-data-builder.js';
+import { generateDevBugReport } from '../../src/reports/dev-bug-report-generator.js';
+import type { ReportData } from '../../src/types/report.js';
 import { createAuditSheetParser } from '../../src/parsers/parser-factory.js';
 import { normalizeUrl } from '../../src/blog/url-normalizer.js';
 import { testConfig } from '../../src/config/test-config.js';
@@ -338,6 +340,61 @@ router.get('/batch/:id/download', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'application/json');
   res.json(combined);
 });
+
+/**
+ * GET /api/runs/batch/:id/dev-report
+ * One combined Markdown "Dev Bug Report" across every blog in the batch —
+ * each blog's own stored audit record (already saved individually via
+ * saveAuditRecord, same as any single blog run) is rendered through the
+ * same generateDevBugReport() used for a single blog, one section per blog.
+ */
+router.get('/batch/:id/dev-report', async (req: Request, res: Response) => {
+  const batch = getBatch(String(req.params['id'] ?? ''));
+  if (!batch) {
+    res.status(404).json({ error: 'Batch not found.' });
+    return;
+  }
+
+  const lines: string[] = [];
+  lines.push('# 🐛 Blog Content Bug Report — Batch', '');
+  lines.push(
+    `> Combined report for **${batch.total} blog(s)** tested together. Each blog's issues are in its own section ` +
+    'below, in the exact same format as a single-blog report — every fix described belongs in the website/CMS ' +
+    'that serves that blog\'s live URL, not in the seo-qa-framework tool itself.',
+    ''
+  );
+
+  for (const item of batch.items) {
+    lines.push('---', '', `## 📄 ${item.filename}`, '');
+    if (item.status === 'error' || !item.auditId) {
+      lines.push(`⚠️ This blog could not be tested: ${item.error ?? 'unknown error'}.`, '');
+      continue;
+    }
+    const record = await getAuditRecord(item.auditId);
+    if (!record) {
+      lines.push('⚠️ This blog\'s audit record could not be found.', '');
+      continue;
+    }
+    // Drop this section's own top-level "# 🐛 Blog Content Bug Report" /
+    // "## Overview" heading level down by one so it nests under this blog's
+    // "##" heading instead of competing with the batch-level title.
+    const singleReport = generateDevBugReport(record.report as unknown as ReportData, { url: record.url });
+    lines.push(nestHeadings(singleReport), '');
+  }
+
+  const slug = `batch-${batch.id}-bug-report`.slice(0, 60);
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}.md"`);
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.send(lines.join('\n'));
+});
+
+/** Demotes every Markdown heading in a single-blog report by two levels (# -> ###, ## -> ####, ...) so it nests correctly under a batch-level "##" section heading. */
+function nestHeadings(markdown: string): string {
+  return markdown
+    .split('\n')
+    .map((line) => (/^#{1,4}\s/.test(line) ? `##${line}` : line))
+    .join('\n');
+}
 
 /** Runs a Blog Testing batch sequentially in the background, persisting each blog exactly like a normal single blog audit. */
 async function processBlogBatch(batchId: string, items: BlogBatchItem[]): Promise<void> {

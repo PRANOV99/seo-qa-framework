@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { CheckCircle, XCircle, AlertTriangle, Download, ArrowLeft } from 'lucide-react';
-import { getBatchStatus, downloadUrl, combinedBatchDownloadUrl, type BatchStatus, type BatchItemStatus } from '../lib/api';
+import { CheckCircle, XCircle, AlertTriangle, Download, Bug, ArrowLeft } from 'lucide-react';
+import { getBatchStatus, downloadUrl, devBugReportUrl, combinedBatchDownloadUrl, batchDevBugReportUrl, type BatchStatus, type BatchItemStatus } from '../lib/api';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -70,6 +70,15 @@ function BlogRow({ item }: { item: BatchItemStatus }) {
         {item.auditId && (
           <>
             <Link to={`/results/${item.auditId}`} className="btn btn-outline btn-sm">View Full Report</Link>
+            <a
+              href={devBugReportUrl(item.auditId)}
+              download={`bug-report-${item.auditId}.md`}
+              className="btn btn-ghost btn-sm"
+              target="_blank" rel="noopener noreferrer"
+              title="A Markdown report of every mismatch for this blog, ready to hand to a developer or paste into Claude/an AI coding assistant."
+            >
+              <Bug size={13} /> Bug Report
+            </a>
             <a
               href={downloadUrl(item.auditId)}
               download={`${item.auditId}.json`}
@@ -151,9 +160,20 @@ export default function BatchResults() {
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>Blog Testing — {batch.total} blog{batch.total !== 1 ? 's' : ''}</h1>
         </div>
         {!running && (
-          <a href={combinedBatchDownloadUrl(batch.id)} download className="btn btn-outline btn-sm" target="_blank" rel="noopener noreferrer">
-            <Download size={14} /> Download Combined Summary
-          </a>
+          <>
+            <a
+              href={batchDevBugReportUrl(batch.id)}
+              download
+              className="btn btn-primary btn-sm"
+              target="_blank" rel="noopener noreferrer"
+              title="One combined Markdown report of every mismatch across all blogs in this batch, ready to hand to a developer or paste into Claude/an AI coding assistant."
+            >
+              <Bug size={14} /> Download Bug Report
+            </a>
+            <a href={combinedBatchDownloadUrl(batch.id)} download className="btn btn-outline btn-sm" target="_blank" rel="noopener noreferrer">
+              <Download size={14} /> Download Combined Summary
+            </a>
+          </>
         )}
       </div>
 

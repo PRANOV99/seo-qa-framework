@@ -130,6 +130,16 @@ export function downloadUrl(id: string): string {
   return `${API_BASE}/history/${encodeURIComponent(id)}?download=1`;
 }
 
+/**
+ * A single Markdown "Dev Bug Report" for one audit — every failed/warning
+ * check with expected vs. actual values and a diff, written so a tester can
+ * hand it straight to a developer (or paste it into Claude/another AI
+ * coding assistant) with no need to open this tool at all.
+ */
+export function devBugReportUrl(id: string): string {
+  return `${API_BASE}/history/${encodeURIComponent(id)}?format=dev-report`;
+}
+
 // ── Blog Testing batch ───────────────────────────────────────────────────────────
 export interface BatchConfig {
   maxBatchSize: number;
@@ -179,6 +189,11 @@ export async function getBatchStatus(batchId: string): Promise<BatchStatus> {
 
 export function combinedBatchDownloadUrl(batchId: string): string {
   return `${API_BASE}/runs/batch/${encodeURIComponent(batchId)}/download`;
+}
+
+/** One combined Markdown Dev Bug Report across every blog in the batch — see devBugReportUrl. */
+export function batchDevBugReportUrl(batchId: string): string {
+  return `${API_BASE}/runs/batch/${encodeURIComponent(batchId)}/dev-report`;
 }
 
 // ── Shared types (mirrors backend ReportData shape) ───────────────────────────
