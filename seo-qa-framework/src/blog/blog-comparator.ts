@@ -84,9 +84,17 @@ function compareSingleValue(
   // on publish is a formatting nicety, not a wording change.
   if (stripEdgePunctuation(normalizeQuotes(normalizeForComparison(expected)))
       !== stripEdgePunctuation(normalizeQuotes(normalizeForComparison(actual)))) {
+    // Case-preserving, quote/edge-punctuation-normalized text for the diff
+    // itself, so the same insignificant differences that don't fail the
+    // check also never show up highlighted as if they were the change.
+    // expected/actual are guaranteed non-empty strings here — both normExp
+    // and normAct were already checked truthy above.
+    const display = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeText(value)));
+    const diff = computeWordDiff(display(expected!), display(actual!));
     return {
       url, checkType, status: 'failed', expected, actual,
-      message: `${checkType} has changed. Expected "${normExp}" but found "${normAct}".`
+      message: `${checkType} has changed. Expected "${normExp}" but found "${normAct}".`,
+      diff
     };
   }
   return { url, checkType, status: 'passed', expected, actual,
@@ -125,7 +133,8 @@ function compareCanonicalUrl(
     return {
       url, checkType, status: 'failed', expected: expectedDisplay, actual: actualCanonicalUrl,
       message: `Canonical URL does not match. Expected it to point to "${expectedDisplay}" ` +
-               `but found "${actualCanonicalUrl}".`
+               `but found "${actualCanonicalUrl}".`,
+      diff: computeWordDiff(expectedDisplay, actualCanonicalUrl)
     };
   }
 
@@ -171,7 +180,8 @@ function compareSlug(url: string, expectedSlug: string | undefined): SeoCheckRes
     return {
       url, checkType, status: 'failed', expected: expectedSlug, actual: actualPath,
       message: `The live URL does not match the expected slug. Expected "${expectedSlug}" ` +
-               `but the live URL path is "${actualPath}".`
+               `but the live URL path is "${actualPath}".`,
+      diff: computeWordDiff(expectedSlug ?? '', actualPath)
     };
   }
 
@@ -212,6 +222,9 @@ function compareHeadingList(
   actual: string[]
 ): SeoCheckResult[] {
   const headingKey = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeForComparison(value)));
+  // Case-preserving, quote/edge-punctuation-normalized text used only for the
+  // diff shown on a genuinely modified heading — mirrors paragraphDisplay.
+  const headingDisplay = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeText(value)));
 
   const expectedKeys = expected.map(headingKey);
   const actualKeys = actual.map(headingKey);
@@ -256,6 +269,23 @@ function compareHeadingList(
         expected: expectedHeading, actual: actual[containedIndex],
         message: `${label} heading "${expectedHeading}" was found on the live page wrapped in ` +
                  `additional markup (e.g. an accordion/FAQ widget) — found "${actual[containedIndex]}".`
+      } satisfies SeoCheckResult;
+    }
+
+    // Genuinely not present anywhere, verbatim or decorated — but a similar
+    // live heading exists (word-overlap similarity, same threshold as
+    // paragraphs): the heading was likely modified, not removed. Reporting
+    // it against that closest candidate with a word-level diff pinpoints
+    // exactly what changed instead of a blunt "missing".
+    const closestIndex = findMostSimilarIndex(normExpect, actualKeys);
+    if (closestIndex !== undefined) {
+      const closestActual = actual[closestIndex]!;
+      const diff = computeWordDiff(headingDisplay(expectedHeading), headingDisplay(closestActual));
+      return {
+        url, checkType, status: 'failed',
+        expected: expectedHeading, actual: closestActual,
+        message: summarizeWordDiff(diff, `${label} heading`),
+        diff
       } satisfies SeoCheckResult;
     }
 
@@ -386,7 +416,7 @@ function compareParagraphs(
 
 /**
  * For each expected hyperlink (from the docx), checks whether that exact
- * (anchor text + URL) pair exists anywhere on the live page.
+ * (anchor text + URL) pair exists on the live page.
  *
  * Matching strategy (in priority order):
  *  1. Exact (anchor text + URL) pair found anywhere on the live page → PASS.
@@ -395,16 +425,28 @@ function compareParagraphs(
  *     destination with different anchor text (e.g. "view pricing" and
  *     "see plans" both pointing to /pricing) does not cause a false failure
  *     for whichever of those anchor texts is actually expected.
+ *
+ *     Matching is occurrence-counted, not just present/absent: if the
+ *     approved document expects the exact same (text, URL) pair twice (a
+ *     repeated CTA, say), the live page must have it twice too — each
+ *     matched occurrence is consumed so it cannot also satisfy a different
+ *     expected entry, and a genuinely-missing duplicate is still reported
+ *     rather than silently passing because "one of them" was found.
  *  2. No exact pair — but another live link shares the destination URL →
- *     report an anchor-text mismatch (for diagnostics only; picks the first
- *     such link found).
+ *     report an anchor-text mismatch, with a word-level diff (for
+ *     diagnostics; picks the first such link not already claimed by #1).
  *  3. No exact pair — but another live link shares the anchor text →
- *     report a destination-URL mismatch.
+ *     report a destination-URL mismatch, with a word-level diff.
  *  4. Neither → report as missing.
  *
- * Extra links on the live page (not in the docx) are not flagged — CMS
- * templates add breadcrumbs, related posts, share buttons, etc. that are
- * not in the approved content brief.
+ * Extra (text, URL) pairs on the live page beyond what the approved
+ * document accounts for are reported as a WARNING (not a FAIL) — genuinely
+ * unexpected content is worth flagging, but CMS templates routinely add
+ * breadcrumbs/related-posts/share-button links that are still legitimate,
+ * so this must never block an otherwise-passing audit. Reported once per
+ * distinct (text, URL) pair, not once per repeated occurrence, so a
+ * "related posts" widget repeating the same card three times doesn't
+ * produce three near-identical warnings.
  */
 function compareLinks(
   url: string,
@@ -412,9 +454,15 @@ function compareLinks(
   actual: BlogLink[]
 ): SeoCheckResult[] {
   const pairKey = (text: string, linkUrl: string) => `${normalizeForComparison(text)}||${linkUrl}`;
+  const linkDisplay = (l: Pick<BlogLink, 'text' | 'url'>) => `${l.text} → ${l.url}`;
 
-  // Every (anchor text, URL) pair actually present on the live page.
-  const actualPairKeys = new Set(actual.map((l) => pairKey(l.text, l.url)));
+  // Occurrence-counted (multiset), not a plain Set, so N identical expected
+  // pairs require N distinct live occurrences — see the doc comment above.
+  const actualPairCounts = new Map<string, number>();
+  for (const link of actual) {
+    const key = pairKey(link.text, link.url);
+    actualPairCounts.set(key, (actualPairCounts.get(key) ?? 0) + 1);
+  }
 
   // Grouped (not de-duped) lookups, used only to produce a helpful message
   // when no exact pair match exists — multiple live links can legitimately
@@ -428,11 +476,14 @@ function compareLinks(
     (byText.get(textKey) ?? byText.set(textKey, []).get(textKey)!).push(link);
   }
 
-  return expected.map((expectedLink) => {
+  const results: SeoCheckResult[] = expected.map((expectedLink) => {
     const checkType       = `Hyperlink: "${paragraphPreview(expectedLink.text)}"`;
-    const expectedDisplay = `${expectedLink.text} → ${expectedLink.url}`;
+    const expectedDisplay = linkDisplay(expectedLink);
+    const key             = pairKey(expectedLink.text, expectedLink.url);
+    const remaining       = actualPairCounts.get(key) ?? 0;
 
-    if (actualPairKeys.has(pairKey(expectedLink.text, expectedLink.url))) {
+    if (remaining > 0) {
+      actualPairCounts.set(key, remaining - 1);
       return {
         url, checkType, status: 'passed',
         expected: expectedDisplay,
@@ -444,24 +495,28 @@ function compareLinks(
     const sameUrl = byUrl.get(expectedLink.url);
     if (sameUrl && sameUrl.length > 0) {
       const found = sameUrl[0]!;
+      const foundDisplay = linkDisplay(found);
       return {
         url, checkType, status: 'failed',
         expected: expectedDisplay,
-        actual: `${found.text} → ${found.url}`,
+        actual: foundDisplay,
         message: `Hyperlink destination matches but anchor text differs. ` +
-                 `Expected "${expectedLink.text}" but found "${found.text}".`
+                 `Expected "${expectedLink.text}" but found "${found.text}".`,
+        diff: computeWordDiff(expectedDisplay, foundDisplay)
       } satisfies SeoCheckResult;
     }
 
     const sameText = byText.get(normalizeForComparison(expectedLink.text));
     if (sameText && sameText.length > 0) {
       const found = sameText[0]!;
+      const foundDisplay = linkDisplay(found);
       return {
         url, checkType, status: 'failed',
         expected: expectedDisplay,
-        actual: `${found.text} → ${found.url}`,
+        actual: foundDisplay,
         message: `Hyperlink text matches but destination URL differs. ` +
-                 `Expected "${expectedLink.url}" but found "${found.url}".`
+                 `Expected "${expectedLink.url}" but found "${found.url}".`,
+        diff: computeWordDiff(expectedDisplay, foundDisplay)
       } satisfies SeoCheckResult;
     }
 
@@ -472,6 +527,27 @@ function compareLinks(
       message: `Hyperlink "${expectedLink.text}" (${expectedLink.url}) is missing from the live page.`
     } satisfies SeoCheckResult;
   });
+
+  // Whatever is left unconsumed in actualPairCounts is genuinely extra —
+  // one WARNING per distinct (text, URL) pair, regardless of how many times
+  // it repeats on the page.
+  const extraSeen = new Set<string>();
+  for (const link of actual) {
+    const key = pairKey(link.text, link.url);
+    if ((actualPairCounts.get(key) ?? 0) <= 0) continue;
+    if (extraSeen.has(key)) continue;
+    extraSeen.add(key);
+    results.push({
+      url,
+      checkType: `Hyperlink (extra): "${paragraphPreview(link.text)}"`,
+      status: 'warning',
+      expected: undefined,
+      actual: linkDisplay(link),
+      message: `Hyperlink "${link.text}" (${link.url}) is present on the live page but not in the approved document.`
+    });
+  }
+
+  return results;
 }
 
 // ── Bold formatting comparison ─────────────────────────────────────────────────
@@ -480,6 +556,13 @@ function compareLinks(
  * Compares bold phrases:
  *  - Expected bold missing from live page → FAIL
  *  - Extra bold on live page not in approved document → WARNING
+ *
+ * Matching is occurrence-counted (a multiset), not just present/absent —
+ * consistent with compareLinks — so N identical expected bold phrases
+ * require N distinct occurrences on the live page: each match consumes one
+ * occurrence, a genuinely-missing duplicate is still reported, and leftover
+ * unconsumed occurrences are reported as extra (deduped to one WARNING per
+ * distinct phrase, not one per repeat).
  *
  * A docx author sometimes bolds an entire Heading-styled paragraph (e.g. a
  * whole "Frequently Asked Questions" H2), which the docx parser captures as
@@ -498,14 +581,21 @@ function compareBoldPhrases(
   actualHeadings: string[]
 ): SeoCheckResult[] {
   const results: SeoCheckResult[] = [];
-  const normalizedActualSet        = new Set(actual.map(normalizeForComparison));
-  const normalizedExpectedSet      = new Set(expected.map(normalizeForComparison));
+
+  const actualCounts = new Map<string, number>();
+  for (const phrase of actual) {
+    const norm = normalizeForComparison(phrase);
+    actualCounts.set(norm, (actualCounts.get(norm) ?? 0) + 1);
+  }
   const normalizedActualHeadingSet = new Set(actualHeadings.map(normalizeForComparison));
 
   for (const phrase of expected) {
     const norm    = normalizeForComparison(phrase);
     const preview = paragraphPreview(phrase);
-    if (normalizedActualSet.has(norm)) {
+    const remaining = actualCounts.get(norm) ?? 0;
+
+    if (remaining > 0) {
+      actualCounts.set(norm, remaining - 1);
       results.push({
         url,
         checkType: `Bold: "${preview}"`,
@@ -532,17 +622,21 @@ function compareBoldPhrases(
     }
   }
 
-  // Extra bold on the live page that wasn't approved → WARNING (not an error)
+  // Whatever is left unconsumed is genuinely extra — one WARNING per
+  // distinct phrase, regardless of how many times it repeats on the page.
+  const extraSeen = new Set<string>();
   for (const phrase of actual) {
-    if (!normalizedExpectedSet.has(normalizeForComparison(phrase))) {
-      results.push({
-        url,
-        checkType: `Bold (extra): "${paragraphPreview(phrase)}"`,
-        status: 'warning',
-        expected: undefined, actual: phrase,
-        message: `Bold phrase "${phrase}" is present on the live page but not in the approved document.`
-      });
-    }
+    const norm = normalizeForComparison(phrase);
+    if ((actualCounts.get(norm) ?? 0) <= 0) continue;
+    if (extraSeen.has(norm)) continue;
+    extraSeen.add(norm);
+    results.push({
+      url,
+      checkType: `Bold (extra): "${paragraphPreview(phrase)}"`,
+      status: 'warning',
+      expected: undefined, actual: phrase,
+      message: `Bold phrase "${phrase}" is present on the live page but not in the approved document.`
+    });
   }
 
   return results;

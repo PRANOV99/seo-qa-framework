@@ -1,6 +1,6 @@
+import type { Browser, Page } from 'playwright';
 import { BrowserManager, type SupportedBrowserName } from '../playwright/browser-manager.js';
 import { PageHelper } from '../playwright/page-helper.js';
-import { ScreenshotHelper } from '../playwright/screenshot-helper.js';
 import { extractLiveBlogContent } from '../seo-checks/blog-validator.js';
 import { parseBlogDocx } from '../blog/docx-blog-parser.js';
 import { compareBlogContent } from '../blog/blog-comparator.js';
@@ -10,6 +10,23 @@ import { AccessibilityChecker } from '../seo-checks/accessibility-check.js';
 import { LighthouseChecker } from '../seo-checks/lighthouse-check.js';
 import type { AuditRunResult } from '../types/audit-run-result.js';
 import { logger } from '../logger/logger.js';
+
+/**
+ * How long to wait for network activity to settle before extracting content,
+ * capped rather than left uncapped. `PageHelper.goto()` already waits for
+ * `domcontentloaded`, so this only needs to cover JS-rendered content
+ * (accordions, lazy sections, etc.) finishing its initial render. An
+ * uncapped `networkidle` wait can stall for many seconds — sometimes the
+ * full default timeout — on pages with continuous background activity
+ * (analytics beacons, chat widgets, ad refreshes) that never truly go idle.
+ * This is intentionally a blog-only helper rather than a change to the
+ * shared PageHelper, which the Website SEO Audit workflow also depends on.
+ */
+const BLOG_NETWORK_IDLE_TIMEOUT_MS = 4000;
+
+async function waitForBlogPageReady(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle', { timeout: BLOG_NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
+}
 
 export interface BlogAuditRunnerOptions {
   /** Browser engine used to load the live blog page. Defaults to chromium. */
@@ -34,10 +51,30 @@ export interface BlogAuditRunnerOptions {
 export class BlogAuditRunner {
   constructor(private readonly options: BlogAuditRunnerOptions = {}) {}
 
-  async run(docxPath: string, url: string): Promise<AuditRunResult> {
+  /**
+   * @param sharedBrowser  An already-launched Browser to reuse instead of
+   *   launching (and closing) a fresh one for this run. Passed by
+   *   BlogBatchRunner so a whole batch shares one browser process — a
+   *   fresh BrowserContext is still created (and closed) per run either
+   *   way, so isolation between blogs (cookies, storage, cache) is
+   *   unaffected. When omitted, behaves exactly as a standalone run always
+   *   has: launches its own browser and closes it before returning.
+   */
+  async run(docxPath: string, url: string, sharedBrowser?: Browser): Promise<AuditRunResult> {
     const startedAt = new Date();
 
-    const expected = await parseBlogDocx(docxPath, url);
+    const ownsBrowser = !sharedBrowser;
+    const browserManager = ownsBrowser ? new BrowserManager() : undefined;
+
+    // Parsing the approved .docx (CPU-bound, no browser involved) has no
+    // dependency on launching the browser (I/O-bound process spawn) — when
+    // this run owns its own browser, overlap the two instead of paying for
+    // them sequentially.
+    const [expected, browser] = await Promise.all([
+      parseBlogDocx(docxPath, url),
+      sharedBrowser ? Promise.resolve(sharedBrowser) : browserManager!.launch(this.options.browserName)
+    ]);
+
     logger.info('Blog document parsed.', {
       docxPath,
       h2Count: expected.h2Headings.length,
@@ -47,9 +84,6 @@ export class BlogAuditRunner {
       hasMetaTitle: Boolean(expected.metaTitle),
       hasMetaDescription: Boolean(expected.metaDescription)
     });
-
-    const browserManager = new BrowserManager();
-    const browser = await browserManager.launch(this.options.browserName);
 
     let seoCheckResults;
     const redirectResults = [];
@@ -62,11 +96,9 @@ export class BlogAuditRunner {
       try {
         const page = await context.newPage();
         const pageHelper = new PageHelper(page);
-        const screenshotHelper = new ScreenshotHelper(page);
-        void screenshotHelper; // available but not used by blog runner
 
         await pageHelper.goto(url);
-        await pageHelper.waitForPageReady();
+        await waitForBlogPageReady(page);
 
         const actual = await extractLiveBlogContent(page);
         seoCheckResults = compareBlogContent(url, expected, actual);
@@ -88,7 +120,7 @@ export class BlogAuditRunner {
         await context.close();
       }
     } finally {
-      await browserManager.close();
+      if (ownsBrowser) await browserManager!.close();
     }
 
     // Lighthouse runs independently (no browser context needed)

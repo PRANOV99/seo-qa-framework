@@ -160,8 +160,14 @@ export function computeWordDiff(expectedText: string, actualText: string): DiffS
   return segments;
 }
 
-/** Produces a concise, specific summary of a word diff for use in a check's `message` field. */
-export function summarizeWordDiff(diff: DiffSegment[]): string {
+/**
+ * Produces a concise, specific summary of a word diff for use in a check's
+ * `message` field. `subject` names what changed ("Paragraph text" by
+ * default, matching every existing paragraph-comparison call site verbatim
+ * — pass e.g. "Meta Title" or "H2 heading" for other check types so the
+ * message reads correctly for whatever failed).
+ */
+export function summarizeWordDiff(diff: DiffSegment[], subject = 'Paragraph text'): string {
   const changed = diff.filter((d) => d.type === 'changed');
   const removed = diff.filter((d) => d.type === 'removed');
   const added = diff.filter((d) => d.type === 'added');
@@ -171,7 +177,7 @@ export function summarizeWordDiff(diff: DiffSegment[]): string {
   if (removed.length > 0) parts.push(`${removed.length} word${removed.length === 1 ? '' : 's'} missing`);
   if (added.length > 0) parts.push(`${added.length} word${added.length === 1 ? '' : 's'} added`);
 
-  if (parts.length === 0) return 'Paragraph text has changed.';
+  if (parts.length === 0) return `${subject} has changed.`;
 
   const example = changed[0]
     ? ` (e.g. "${changed[0].expected}" → "${changed[0].actual}")`
@@ -181,5 +187,5 @@ export function summarizeWordDiff(diff: DiffSegment[]): string {
         ? ` (e.g. extra "${added[0].actual}")`
         : '';
 
-  return `Paragraph text has changed — ${parts.join(', ')}${example}.`;
+  return `${subject} has changed — ${parts.join(', ')}${example}.`;
 }

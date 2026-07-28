@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { BlogBatchRunner, type BlogBatchItem, type BlogRunnerLike } from '../../src/runner/blog-batch-runner.js';
+import type { Browser } from 'playwright';
+import { BlogBatchRunner, type BlogBatchItem, type BlogRunnerLike, type BrowserManagerLike } from '../../src/runner/blog-batch-runner.js';
 import { buildSampleAuditRunResult } from './fixtures.js';
 
 function items(count: number): BlogBatchItem[] {
@@ -78,5 +79,67 @@ describe('BlogBatchRunner', () => {
 
     assert.deepEqual(started, [0, 1, 2]);
     assert.deepEqual(completed, [0, 1, 2]);
+  });
+
+  it('launches exactly ONE shared browser for the whole batch and passes it to every item', async () => {
+    const FAKE_BROWSER = { id: 'fake-browser' } as unknown as Browser;
+    let launchCount = 0;
+    let closeCount = 0;
+    const receivedBrowsers: unknown[] = [];
+
+    const fakeBrowserManager: BrowserManagerLike = {
+      launch: async () => { launchCount++; return FAKE_BROWSER; },
+      close: async () => { closeCount++; }
+    };
+    const fakeRunner: BlogRunnerLike = {
+      run: async (docxPath, _url, browser) => {
+        receivedBrowsers.push(browser);
+        return buildSampleAuditRunResult({ sourcePath: docxPath, kind: 'blog' });
+      }
+    };
+
+    const batch = new BlogBatchRunner({}, fakeRunner, fakeBrowserManager);
+    const results = await batch.run(items(5));
+
+    assert.equal(launchCount, 1, 'Exactly one browser must be launched for a 5-item batch, not one per item.');
+    assert.equal(closeCount, 1, 'The shared browser must be closed exactly once, after the whole batch settles.');
+    assert.equal(receivedBrowsers.length, 5);
+    assert.ok(receivedBrowsers.every((b) => b === FAKE_BROWSER), 'Every item must receive the SAME shared browser instance.');
+    assert.ok(results.every((r) => r.status === 'done'));
+  });
+
+  it('still closes the shared browser exactly once even when some items fail', async () => {
+    let closeCount = 0;
+    const fakeBrowserManager: BrowserManagerLike = {
+      launch: async () => ({} as unknown as Browser),
+      close: async () => { closeCount++; }
+    };
+    const fakeRunner: BlogRunnerLike = {
+      run: async (docxPath) => {
+        if (docxPath.includes('blog-2')) throw new Error('boom');
+        return buildSampleAuditRunResult({ sourcePath: docxPath, kind: 'blog' });
+      }
+    };
+
+    const batch = new BlogBatchRunner({}, fakeRunner, fakeBrowserManager);
+    const results = await batch.run(items(3));
+
+    assert.equal(closeCount, 1);
+    assert.equal(results[1]?.status, 'error');
+  });
+
+  it('does not launch a browser at all for an empty batch', async () => {
+    let launchCount = 0;
+    const fakeBrowserManager: BrowserManagerLike = {
+      launch: async () => { launchCount++; return {} as unknown as Browser; },
+      close: async () => {}
+    };
+    const fakeRunner: BlogRunnerLike = { run: async () => buildSampleAuditRunResult({ kind: 'blog' }) };
+
+    const batch = new BlogBatchRunner({}, fakeRunner, fakeBrowserManager);
+    const results = await batch.run([]);
+
+    assert.equal(launchCount, 0);
+    assert.deepEqual(results, []);
   });
 });

@@ -881,18 +881,110 @@ describe('compareBlogContent — hyperlinks', () => {
     );
   });
 
-  it('ignores extra links on the live page that are not in the approved document', () => {
+  it('does not FAIL for extra links on the live page — reports them as a WARNING instead', () => {
     const actual = exactMatch(baseExpected);
     // Add a CMS-generated "related posts" link not in the docx
     actual.links.push(makeLink('Related: 5 Bread Recipes', 'https://example.com/bread-recipes'));
 
     const results     = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
     const linkResults = results.filter((r) => r.checkType.startsWith('Hyperlink:'));
+    const extra       = results.find((r) => r.checkType.startsWith('Hyperlink (extra)'));
 
     assert.ok(
       linkResults.every((r) => r.status === 'passed'),
       'Extra links on the live page must not cause failures.'
     );
+    assert.equal(extra?.status, 'warning', `Expected an extra-link WARNING. Got: ${JSON.stringify(extra)}`);
+    assert.equal(extra?.actual, 'Related: 5 Bread Recipes → https://example.com/bread-recipes');
+  });
+
+  it('reports only ONE extra-link WARNING even when the same unexpected (text, URL) pair repeats several times', () => {
+    const actual = exactMatch(baseExpected);
+    const decoy = makeLink('Related: 5 Bread Recipes', 'https://example.com/bread-recipes');
+    actual.links.push(decoy, decoy, decoy);
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const extras  = results.filter((r) => r.checkType.startsWith('Hyperlink (extra)'));
+
+    assert.equal(extras.length, 1, `Expected exactly one deduped extra-link warning. Got: ${JSON.stringify(extras)}`);
+  });
+
+  it('requires N distinct live occurrences when the approved document expects the same (text, URL) pair N times', () => {
+    // Regression: matching used to be a plain Set (presence only), so two
+    // identical expected links were both marked PASSED even when the live
+    // page only had ONE occurrence — silently missing a genuinely-absent
+    // duplicate (e.g. a repeated CTA link).
+    const expected: BlogContent = {
+      ...baseExpected,
+      links: [
+        makeLink('Book a free consultation', 'https://example.com/contact'),
+        makeLink('Book a free consultation', 'https://example.com/contact')
+      ]
+    };
+    const actual = exactMatch(expected);
+    actual.links = [makeLink('Book a free consultation', 'https://example.com/contact')]; // only one, not two
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const ctaResults = results.filter((r) => r.checkType.startsWith('Hyperlink:') && r.expected?.includes('Book a free consultation'));
+
+    assert.equal(ctaResults.length, 2);
+    assert.equal(ctaResults.filter((r) => r.status === 'passed').length, 1,
+      'Exactly one of the two identical expected links should PASS (matching the single live occurrence).');
+    assert.equal(ctaResults.filter((r) => r.status === 'failed').length, 1,
+      'The second identical expected link has no matching occurrence left and must FAIL.');
+  });
+
+  it('PASSES both when the approved document expects the same (text, URL) pair twice and the live page also has it twice', () => {
+    const expected: BlogContent = {
+      ...baseExpected,
+      links: [
+        makeLink('Book a free consultation', 'https://example.com/contact'),
+        makeLink('Book a free consultation', 'https://example.com/contact')
+      ]
+    };
+    const actual = exactMatch(expected);
+    actual.links = [
+      makeLink('Book a free consultation', 'https://example.com/contact'),
+      makeLink('Book a free consultation', 'https://example.com/contact')
+    ];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const ctaResults = results.filter((r) => r.checkType.startsWith('Hyperlink:') && r.expected?.includes('Book a free consultation'));
+
+    assert.equal(ctaResults.length, 2);
+    assert.ok(ctaResults.every((r) => r.status === 'passed'), `Got: ${JSON.stringify(ctaResults)}`);
+  });
+
+  it('attaches a word-level diff when the anchor text matches but the destination URL differs', () => {
+    const actual = exactMatch(baseExpected);
+    actual.links = [
+      makeLink('sourdough starter guide', 'https://example.com/guides/starter'),
+      makeLink('Dutch oven recommendations', 'https://example.com/tools/WRONG-URL')
+    ];
+
+    const results     = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const urlMismatch = results.find(
+      (r) => r.checkType.startsWith('Hyperlink:') && r.expected?.includes('Dutch oven recommendations')
+    );
+
+    assert.ok(urlMismatch?.diff && urlMismatch.diff.length > 0, `Expected a diff to be attached. Got: ${JSON.stringify(urlMismatch)}`);
+    assert.ok(urlMismatch?.diff?.some((d) => d.type === 'changed' || d.type === 'added' || d.type === 'removed'),
+      'Diff should highlight the changed URL segment.');
+  });
+
+  it('attaches a word-level diff when the URL matches but the anchor text differs', () => {
+    const actual = exactMatch(baseExpected);
+    actual.links = [
+      makeLink('sourdough starter guide', 'https://example.com/guides/starter'),
+      makeLink('Dutch oven buying guide', 'https://example.com/tools/dutch-oven')
+    ];
+
+    const results  = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const textDiff = results.find(
+      (r) => r.checkType.startsWith('Hyperlink:') && r.expected?.includes('Dutch oven')
+    );
+
+    assert.ok(textDiff?.diff && textDiff.diff.length > 0, `Expected a diff to be attached. Got: ${JSON.stringify(textDiff)}`);
   });
 
   it('PASSES when the live page has multiple links to the same URL with different anchor text, as long as the expected pair exists somewhere', () => {
@@ -1030,5 +1122,141 @@ describe('compareBlogContent — bold formatting', () => {
 
     assert.equal(bold?.status, 'failed', `Got: ${JSON.stringify(bold)}`);
     assert.match(bold?.message ?? '', /missing from the live page/);
+  });
+
+  it('requires N distinct live occurrences when the approved document expects the same bold phrase N times', () => {
+    // Regression: matching used to be a plain Set (presence only), so two
+    // identical expected bold phrases were both marked PASSED even when the
+    // live page only had ONE occurrence.
+    const expected: BlogContent = {
+      ...baseExpected,
+      boldPhrases: ['limited time offer', 'limited time offer']
+    };
+    const actual = exactMatch(expected);
+    actual.boldPhrases = ['limited time offer']; // only one, not two
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const boldResults = results.filter((r) => r.checkType === 'Bold: "limited time offer"');
+
+    assert.equal(boldResults.length, 2);
+    assert.equal(boldResults.filter((r) => r.status === 'passed').length, 1);
+    assert.equal(boldResults.filter((r) => r.status === 'failed').length, 1);
+  });
+
+  it('reports only ONE extra-bold WARNING even when the same unexpected phrase repeats several times', () => {
+    const actual = exactMatch(baseExpected);
+    actual.boldPhrases = [...baseExpected.boldPhrases, 'unexpected bold phrase', 'unexpected bold phrase', 'unexpected bold phrase'];
+
+    const results = compareBlogContent(BASE_URL, baseExpected, actual);
+    const extras  = results.filter((r) => r.checkType.startsWith('Bold (extra)'));
+
+    assert.equal(extras.length, 1, `Expected exactly one deduped extra-bold warning. Got: ${JSON.stringify(extras)}`);
+  });
+
+  it('reports the correct number of extra occurrences when actual has more repeats than expected', () => {
+    // Expected has ONE occurrence, actual has THREE — two are genuinely
+    // extra (unconsumed after the one match), reported as one deduped WARNING.
+    const expected: BlogContent = { ...baseExpected, boldPhrases: ['limited time offer'] };
+    const actual = exactMatch(expected);
+    actual.boldPhrases = ['limited time offer', 'limited time offer', 'limited time offer'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const matched = results.find((r) => r.checkType === 'Bold: "limited time offer"');
+    const extras  = results.filter((r) => r.checkType.startsWith('Bold (extra)'));
+
+    assert.equal(matched?.status, 'passed');
+    assert.equal(extras.length, 1, `Got: ${JSON.stringify(extras)}`);
+  });
+});
+
+// ── Difference highlighting (word-level diff beyond paragraphs) ────────────────
+
+describe('compareBlogContent — difference highlighting', () => {
+  it('attaches a word-level diff when Meta Title genuinely changes', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaTitle = 'How to Bake Sourdough Bread | Example Blog';
+    const actual = exactMatch(baseExpected);
+    actual.metaTitle = 'How to Bake Rye Bread | Example Blog';
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const metaTitle = results.find((r) => r.checkType === 'Meta Title');
+
+    assert.equal(metaTitle?.status, 'failed');
+    assert.ok(metaTitle?.diff && metaTitle.diff.length > 0, `Expected a diff. Got: ${JSON.stringify(metaTitle)}`);
+    assert.ok(metaTitle?.diff?.some((d) => d.type === 'changed'), 'Diff should show the changed word(s).');
+  });
+
+  it('attaches a word-level diff when Meta Description genuinely changes', () => {
+    const expected = exactMatch(baseExpected);
+    expected.metaDescription = 'Learn how to bake sourdough bread at home.';
+    const actual = exactMatch(baseExpected);
+    actual.metaDescription = 'Learn how to bake sourdough bread outdoors.';
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const metaDesc = results.find((r) => r.checkType === 'Meta Description');
+
+    assert.ok(metaDesc?.diff && metaDesc.diff.length > 0, `Expected a diff. Got: ${JSON.stringify(metaDesc)}`);
+  });
+
+  it('does NOT attach a diff when Meta Title is entirely missing (nothing to diff against)', () => {
+    const expected = exactMatch(baseExpected);
+    const actual = exactMatch(baseExpected);
+    actual.metaTitle = undefined;
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const metaTitle = results.find((r) => r.checkType === 'Meta Title');
+
+    assert.equal(metaTitle?.status, 'failed');
+    assert.equal(metaTitle?.diff, undefined);
+  });
+
+  it('attaches a diff when the canonical URL points somewhere unexpected', () => {
+    const actual = exactMatch(baseExpected);
+    actual.canonicalUrl = 'https://example.com/blog/some-other-post';
+
+    const results = compareBlogContent(BASE_URL, baseExpected, actual);
+    const canonical = results.find((r) => r.checkType === 'Canonical URL');
+
+    assert.ok(canonical?.diff && canonical.diff.length > 0, `Expected a diff. Got: ${JSON.stringify(canonical)}`);
+  });
+
+  it('attaches a diff when the live URL does not match the expected slug', () => {
+    const expected = { ...baseExpected, expectedSlug: 'sourdough' };
+    const results = compareBlogContent('https://example.com/blog/completely-different-slug', expected, exactMatch(expected));
+    const slug = results.find((r) => r.checkType === 'Blog URL / Slug');
+
+    assert.equal(slug?.status, 'failed');
+    assert.ok(slug?.diff && slug.diff.length > 0, `Expected a diff. Got: ${JSON.stringify(slug)}`);
+  });
+
+  it('reports a genuinely modified heading against its closest live counterpart with a diff, instead of a blunt "missing"', () => {
+    const expected: BlogContent = {
+      ...baseExpected,
+      h2Headings: ['Why Sri Sreenivasa Infra Track Record Matters For Buyers']
+    };
+    const actual = exactMatch(expected);
+    // One word changed ("Matters" -> "Counts") — should read as MODIFIED, not missing.
+    actual.h2Headings = ['Why Sri Sreenivasa Infra Track Record Counts For Buyers'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h2 = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(h2?.status, 'failed', `Got: ${JSON.stringify(h2)}`);
+    assert.notEqual(h2?.message, `H2 heading "${expected.h2Headings[0]}" is missing from the live page.`);
+    assert.ok(h2?.diff && h2.diff.length > 0, `Expected a diff. Got: ${JSON.stringify(h2)}`);
+    assert.ok(h2?.diff?.some((d) => d.type === 'changed'), 'Diff should show the changed word.');
+  });
+
+  it('still reports a heading with NO similar counterpart as plain "missing" with no diff', () => {
+    const expected: BlogContent = { ...baseExpected, h2Headings: ['Overview', 'Pricing'] };
+    const actual = exactMatch(expected);
+    actual.h2Headings = ['Pricing']; // "Overview" genuinely removed
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const overview = results.find((r) => r.checkType === 'H2 #1');
+
+    assert.equal(overview?.status, 'failed');
+    assert.match(overview?.message ?? '', /missing from the live page/);
+    assert.equal(overview?.diff, undefined);
   });
 });

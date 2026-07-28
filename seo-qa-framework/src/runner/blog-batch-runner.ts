@@ -1,6 +1,11 @@
+import type { Browser } from 'playwright';
 import { BlogAuditRunner, type BlogAuditRunnerOptions } from './blog-audit-runner.js';
+import { BrowserManager } from '../playwright/browser-manager.js';
 import type { AuditRunResult } from '../types/audit-run-result.js';
 import { logger } from '../logger/logger.js';
+
+/** Minimal shape BlogBatchRunner depends on for launching a shared browser — lets tests inject a fake in place of a real BrowserManager. */
+export type BrowserManagerLike = Pick<BrowserManager, 'launch' | 'close'>;
 
 export interface BlogBatchItem {
   /** Absolute path to the uploaded .docx on disk. */
@@ -34,6 +39,13 @@ export type BlogRunnerLike = Pick<BlogAuditRunner, 'run'>;
  * one after another (never in parallel), so results are produced in a
  * predictable order and progress can be reported as "N of total".
  *
+ * All items in the batch share ONE launched browser (each still gets its
+ * own fresh BrowserContext, so cookies/storage/cache never leak between
+ * blogs) — launching a full browser process is the single most expensive
+ * part of a run, and repeating it per item is pure waste for a same-machine
+ * batch. The browser is launched once up front and closed once the whole
+ * batch settles, even if some items fail along the way.
+ *
  * Blog Testing always runs with Lighthouse, Accessibility, Broken Links,
  * and Redirects disabled — those checks don't apply to blog content
  * validation, so they are hard-disabled here rather than left as
@@ -45,8 +57,10 @@ export type BlogRunnerLike = Pick<BlogAuditRunner, 'run'>;
  */
 export class BlogBatchRunner {
   private readonly runner: BlogRunnerLike;
+  private readonly browserManager: BrowserManagerLike;
+  private readonly browserName: BlogAuditRunnerOptions['browserName'];
 
-  constructor(options: BlogAuditRunnerOptions = {}, runner?: BlogRunnerLike) {
+  constructor(options: BlogAuditRunnerOptions = {}, runner?: BlogRunnerLike, browserManager?: BrowserManagerLike) {
     this.runner = runner ?? new BlogAuditRunner({
       browserName: options.browserName,
       alwaysRunRedirectCheck: false,
@@ -54,6 +68,8 @@ export class BlogBatchRunner {
       alwaysRunAccessibilityCheck: false,
       lighthouseUrls: []
     });
+    this.browserManager = browserManager ?? new BrowserManager();
+    this.browserName = options.browserName;
   }
 
   async run(
@@ -62,27 +78,34 @@ export class BlogBatchRunner {
   ): Promise<BlogBatchItemResult[]> {
     const total = items.length;
     const results: BlogBatchItemResult[] = [];
+    if (total === 0) return results;
 
-    for (let index = 0; index < total; index++) {
-      const item = items[index]!;
-      await callbacks.onStart?.(index, total, item);
+    const browser: Browser = await this.browserManager.launch(this.browserName);
 
-      let itemResult: BlogBatchItemResult;
-      try {
-        const result = await this.runner.run(item.docxPath, item.url);
-        itemResult = { filename: item.filename, url: item.url, status: 'done', result };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error('[BlogBatchRunner] Blog failed, continuing with the rest of the batch.', {
-          filename: item.filename,
-          url: item.url,
-          message
-        });
-        itemResult = { filename: item.filename, url: item.url, status: 'error', error: message };
+    try {
+      for (let index = 0; index < total; index++) {
+        const item = items[index]!;
+        await callbacks.onStart?.(index, total, item);
+
+        let itemResult: BlogBatchItemResult;
+        try {
+          const result = await this.runner.run(item.docxPath, item.url, browser);
+          itemResult = { filename: item.filename, url: item.url, status: 'done', result };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error('[BlogBatchRunner] Blog failed, continuing with the rest of the batch.', {
+            filename: item.filename,
+            url: item.url,
+            message
+          });
+          itemResult = { filename: item.filename, url: item.url, status: 'error', error: message };
+        }
+
+        results.push(itemResult);
+        await callbacks.onComplete?.(index, total, item, itemResult);
       }
-
-      results.push(itemResult);
-      await callbacks.onComplete?.(index, total, item, itemResult);
+    } finally {
+      await this.browserManager.close();
     }
 
     return results;

@@ -37,29 +37,34 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
 
   // Title (H1) is often placed outside the content container in CMS themes,
   // so we try the scoped selector first then fall back to page-wide.
-  const [scopedTitle, h2Headings, h3Headings, h4Headings, paragraphs, metaTitle, metaDescription, canonicalHref] =
-    await Promise.all([
-      extractText(page, `${scope} h1`),
-      extractAllText(page, `${scope} h2, ${scope} [role="heading"][aria-level="2"]`),
-      extractAllText(page, `${scope} h3, ${scope} [role="heading"][aria-level="3"]`),
-      // Accordion/FAQ widgets (a common WordPress/page-builder pattern) often
-      // render their question text as a <button>/<div> with role="heading"
-      // and an explicit aria-level instead of a literal <h4> tag — include
-      // those so an FAQ heading that genuinely exists isn't missed.
-      extractAllText(page, `${scope} h4, ${scope} [role="heading"][aria-level="4"]`),
-      extractParagraphContent(page, scope),
-      page.title(),
-      page.$eval('meta[name="description"]', (el) => el.getAttribute('content')).catch(() => null),
-      page.$eval('link[rel="canonical"]', (el) => el.getAttribute('href')).catch(() => null)
-    ]);
+  //
+  // Every other query below is independent of the others — none of them
+  // depend on each other's result — so they all run as one batch of
+  // concurrent Playwright round-trips instead of paying for each one's
+  // latency sequentially. Only the H1 fallback (below) has to wait on its
+  // own scoped query first, since it only fires when that comes back empty.
+  const [
+    scopedTitle, h2Headings, h3Headings, h4Headings, paragraphs,
+    metaTitle, metaDescription, canonicalHref, links, boldPhrases
+  ] = await Promise.all([
+    extractText(page, `${scope} h1`),
+    extractAllText(page, `${scope} h2, ${scope} [role="heading"][aria-level="2"]`),
+    extractAllText(page, `${scope} h3, ${scope} [role="heading"][aria-level="3"]`),
+    // Accordion/FAQ widgets (a common WordPress/page-builder pattern) often
+    // render their question text as a <button>/<div> with role="heading"
+    // and an explicit aria-level instead of a literal <h4> tag — include
+    // those so an FAQ heading that genuinely exists isn't missed.
+    extractAllText(page, `${scope} h4, ${scope} [role="heading"][aria-level="4"]`),
+    extractParagraphContent(page, scope),
+    page.title(),
+    page.$eval('meta[name="description"]', (el) => el.getAttribute('content')).catch(() => null),
+    page.$eval('link[rel="canonical"]', (el) => el.getAttribute('href')).catch(() => null),
+    // Links/bold are scoped to the content container only — see the module doc comment.
+    extractLinksFromPage(page, scope, pageUrl),
+    extractBoldFromPage(page, scope)
+  ]);
 
   const title = scopedTitle ?? (await extractText(page, 'h1'));
-
-  // ── Links — extracted within the content scope only ───────────────────────
-  const links = await extractLinksFromPage(page, scope, pageUrl);
-
-  // ── Bold phrases — extracted within the content scope only ────────────────
-  const boldPhrases = await extractBoldFromPage(page, scope);
 
   return {
     title:           title ?? undefined,

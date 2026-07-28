@@ -6,6 +6,7 @@ import path from 'node:path';
 import { strToU8, zipSync } from 'fflate';
 import { test, expect } from '../src/fixtures/test-fixtures.js';
 import { BlogAuditRunner } from '../src/runner/blog-audit-runner.js';
+import { BlogBatchRunner } from '../src/runner/blog-batch-runner.js';
 
 test.describe('BlogAuditRunner', () => {
   test.skip(
@@ -381,6 +382,52 @@ test.describe('BlogAuditRunner', () => {
       expect(paragraphResult?.status).toBe('passed');
     } finally {
       await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
+
+  test('BlogBatchRunner shares one real browser across multiple blogs without leaking state between them', async () => {
+    // End-to-end confirmation of the performance refactor: a real
+    // BlogBatchRunner (real BrowserManager, real BlogAuditRunner) processes
+    // two different live pages that share one launched browser process. Each
+    // must still get its own correct, fully independent result — proving
+    // per-item BrowserContext isolation holds even though the browser itself
+    // is shared.
+    const matchingDocxPath = await writeBlogDocx('batch-matching.docx', [
+      paragraph('Meta Title: How to Bake Sourdough Bread | Example Blog'),
+      paragraph('Meta Description: Learn how to bake sourdough bread at home with this step-by-step guide.'),
+      heading(1, 'How to Bake Sourdough Bread'),
+      paragraph('This is the introduction paragraph.'),
+      heading(2, 'Ingredients'),
+      paragraph('Flour, water, salt, and a starter.')
+    ]);
+    const headingEntitiesDocxPath = await writeBlogDocx('batch-heading-entities.docx', [
+      paragraph("Meta Title: Why Sri Sreenivasa Infra's Track Record Matters | Example Blog"),
+      paragraph("Meta Description: Why Sri Sreenivasa Infra's track record matters for buyers."),
+      heading(1, "Why Sri Sreenivasa Infra's Track Record Matters"),
+      paragraph('This is the introduction paragraph.'),
+      heading(2, "Why Sri Sreenivasa Infra's Track Record Matters Here"),
+      paragraph('Flour, water, salt, and a starter.')
+    ]);
+
+    try {
+      const batchRunner = new BlogBatchRunner();
+      const results = await batchRunner.run([
+        { docxPath: matchingDocxPath, url: matchingPath, filename: 'matching.docx' },
+        { docxPath: headingEntitiesDocxPath, url: headingEntitiesPath, filename: 'heading-entities.docx' }
+      ]);
+
+      expect(results.length).toBe(2);
+      expect(results[0]?.status).toBe('done');
+      expect(results[1]?.status).toBe('done');
+      // "skipped" is expected here too — this docx has no "SEO Slug:" field,
+      // so the Blog URL / Slug check is legitimately skipped, not failed.
+      expect(results[0]?.result?.seoCheckResults.every((c) => c.status === 'passed' || c.status === 'skipped')).toBe(true);
+
+      const h2Result = results[1]?.result?.seoCheckResults.find((c) => c.checkType === 'H2 #1');
+      expect(h2Result?.status).toBe('passed');
+    } finally {
+      await rm(path.dirname(matchingDocxPath), { recursive: true, force: true });
+      await rm(path.dirname(headingEntitiesDocxPath), { recursive: true, force: true });
     }
   });
 });
