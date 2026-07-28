@@ -9,6 +9,7 @@ import { BrokenLinkChecker } from '../seo-checks/broken-link-check.js';
 import { AccessibilityChecker } from '../seo-checks/accessibility-check.js';
 import { LighthouseChecker } from '../seo-checks/lighthouse-check.js';
 import type { AuditRunResult } from '../types/audit-run-result.js';
+import type { BlogContent } from '../types/blog.js';
 import { logger } from '../logger/logger.js';
 
 /**
@@ -52,6 +53,10 @@ export class BlogAuditRunner {
   constructor(private readonly options: BlogAuditRunnerOptions = {}) {}
 
   /**
+   * @param docxSource   Either a path to the approved .docx (parsed fresh),
+   *   or an already-parsed BlogContent — passed when re-running a
+   *   previously-tested blog against a new crawl of the live page without
+   *   re-uploading the document (see BlogBatchRunner / the `/rerun` route).
    * @param sharedBrowser  An already-launched Browser to reuse instead of
    *   launching (and closing) a fresh one for this run. Passed by
    *   BlogBatchRunner so a whole batch shares one browser process — a
@@ -59,8 +64,16 @@ export class BlogAuditRunner {
    *   way, so isolation between blogs (cookies, storage, cache) is
    *   unaffected. When omitted, behaves exactly as a standalone run always
    *   has: launches its own browser and closes it before returning.
+   * @param sourceLabel  Used as this run's `sourcePath` when `docxSource` is
+   *   already-parsed content rather than a file path (there's no file to
+   *   name it after) — typically the original .docx filename from history.
    */
-  async run(docxPath: string, url: string, sharedBrowser?: Browser): Promise<AuditRunResult> {
+  async run(
+    docxSource: string | BlogContent,
+    url: string,
+    sharedBrowser?: Browser,
+    sourceLabel?: string
+  ): Promise<AuditRunResult> {
     const startedAt = new Date();
 
     const ownsBrowser = !sharedBrowser;
@@ -69,14 +82,18 @@ export class BlogAuditRunner {
     // Parsing the approved .docx (CPU-bound, no browser involved) has no
     // dependency on launching the browser (I/O-bound process spawn) — when
     // this run owns its own browser, overlap the two instead of paying for
-    // them sequentially.
+    // them sequentially. When docxSource is already-parsed content (a
+    // re-run), there's nothing to parse at all.
     const [expected, browser] = await Promise.all([
-      parseBlogDocx(docxPath, url),
+      typeof docxSource === 'string' ? parseBlogDocx(docxSource, url) : Promise.resolve(docxSource),
       sharedBrowser ? Promise.resolve(sharedBrowser) : browserManager!.launch(this.options.browserName)
     ]);
 
+    const sourcePath = typeof docxSource === 'string' ? docxSource : (sourceLabel ?? '(re-run — approved content reused)');
+
     logger.info('Blog document parsed.', {
-      docxPath,
+      docxPath: sourcePath,
+      reusedParsedContent: typeof docxSource !== 'string',
       h2Count: expected.h2Headings.length,
       h3Count: expected.h3Headings.length,
       h4Count: expected.h4Headings.length,
@@ -146,8 +163,9 @@ export class BlogAuditRunner {
     });
 
     return {
-      sourcePath: docxPath,
+      sourcePath,
       kind: 'blog',
+      expected,
       totalRows: seoCheckResults.length,
       seoCheckResults,
       redirectResults,

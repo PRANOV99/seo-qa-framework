@@ -6,7 +6,7 @@ import { buildSampleAuditRunResult } from './fixtures.js';
 
 function items(count: number): BlogBatchItem[] {
   return Array.from({ length: count }, (_, i) => ({
-    docxPath: `/tmp/blog-${i + 1}.docx`,
+    docxSource: `/tmp/blog-${i + 1}.docx`,
     url: `https://example.com/blog/post-${i + 1}`,
     filename: `Blog ${i + 1}.docx`
   }));
@@ -19,7 +19,8 @@ describe('BlogBatchRunner', () => {
     let maxInFlight = 0;
 
     const fakeRunner: BlogRunnerLike = {
-      run: async (docxPath) => {
+      run: async (docxSource) => {
+        const docxPath = docxSource as string;
         inFlight++;
         maxInFlight = Math.max(maxInFlight, inFlight);
         callOrder.push(docxPath);
@@ -41,7 +42,8 @@ describe('BlogBatchRunner', () => {
 
   it('isolates a failing item so the rest of the batch still completes', async () => {
     const fakeRunner: BlogRunnerLike = {
-      run: async (docxPath) => {
+      run: async (docxSource) => {
+        const docxPath = docxSource as string;
         if (docxPath.includes('blog-2')) {
           throw new Error('Playwright navigation timeout');
         }
@@ -61,7 +63,7 @@ describe('BlogBatchRunner', () => {
 
   it('reports start and completion progress for every item, in order', async () => {
     const fakeRunner: BlogRunnerLike = {
-      run: async (docxPath) => buildSampleAuditRunResult({ sourcePath: docxPath, kind: 'blog' })
+      run: async (docxSource) => buildSampleAuditRunResult({ sourcePath: docxSource as string, kind: 'blog' })
     };
 
     const started: number[] = [];
@@ -92,9 +94,9 @@ describe('BlogBatchRunner', () => {
       close: async () => { closeCount++; }
     };
     const fakeRunner: BlogRunnerLike = {
-      run: async (docxPath, _url, browser) => {
+      run: async (docxSource, _url, browser) => {
         receivedBrowsers.push(browser);
-        return buildSampleAuditRunResult({ sourcePath: docxPath, kind: 'blog' });
+        return buildSampleAuditRunResult({ sourcePath: docxSource as string, kind: 'blog' });
       }
     };
 
@@ -115,7 +117,8 @@ describe('BlogBatchRunner', () => {
       close: async () => { closeCount++; }
     };
     const fakeRunner: BlogRunnerLike = {
-      run: async (docxPath) => {
+      run: async (docxSource) => {
+        const docxPath = docxSource as string;
         if (docxPath.includes('blog-2')) throw new Error('boom');
         return buildSampleAuditRunResult({ sourcePath: docxPath, kind: 'blog' });
       }
@@ -141,5 +144,25 @@ describe('BlogBatchRunner', () => {
 
     assert.equal(launchCount, 0);
     assert.deepEqual(results, []);
+  });
+
+  it('passes an already-parsed BlogContent through to the runner unchanged, for re-run items', async () => {
+    const parsedContent = {
+      h2Headings: ['A heading'], h3Headings: [], h4Headings: [], paragraphs: ['A paragraph.'],
+      links: [], boldPhrases: []
+    };
+    const received: unknown[] = [];
+    const fakeRunner: BlogRunnerLike = {
+      run: async (docxSource) => {
+        received.push(docxSource);
+        return buildSampleAuditRunResult({ kind: 'blog' });
+      }
+    };
+
+    const batch = new BlogBatchRunner({}, fakeRunner);
+    await batch.run([{ docxSource: parsedContent, url: 'https://example.com/blog/post', filename: 'Post.docx' }]);
+
+    assert.equal(received.length, 1);
+    assert.deepEqual(received[0], parsedContent);
   });
 });

@@ -13,6 +13,7 @@ import { BlogBatchRunner, type BlogBatchItem } from '../../src/runner/blog-batch
 import { buildReportData } from '../../src/reports/report-data-builder.js';
 import { generateDevBugReport } from '../../src/reports/dev-bug-report-generator.js';
 import type { ReportData } from '../../src/types/report.js';
+import type { BlogContent } from '../../src/types/blog.js';
 import { createAuditSheetParser } from '../../src/parsers/parser-factory.js';
 import { normalizeUrl } from '../../src/blog/url-normalizer.js';
 import { testConfig } from '../../src/config/test-config.js';
@@ -161,6 +162,7 @@ router.post(
         auditConfig,
         summary:  reportData.summary  as unknown as Record<string, unknown>,
         report:   reportData          as unknown as Record<string, unknown>,
+        expectedContent: result.expected as unknown as Record<string, unknown> | undefined,
       };
 
       await saveAuditRecord(record);
@@ -277,7 +279,7 @@ router.post(
     }
 
     const items: BlogBatchItem[] = files.map((file, i) => ({
-      docxPath: file.path,
+      docxSource: file.path,
       url: trimmedUrls[i]!,
       filename: file.originalname
     }));
@@ -396,6 +398,11 @@ function nestHeadings(markdown: string): string {
     .join('\n');
 }
 
+/** Deletes the item's uploaded .docx, if it has one — a rerun item carries already-parsed BlogContent instead of a file, so there's nothing to clean up. */
+async function safeDeleteBatchItemFile(item: BlogBatchItem): Promise<void> {
+  if (typeof item.docxSource === 'string') await safeDelete(item.docxSource);
+}
+
 /** Runs a Blog Testing batch sequentially in the background, persisting each blog exactly like a normal single blog audit. */
 async function processBlogBatch(batchId: string, items: BlogBatchItem[]): Promise<void> {
   try {
@@ -416,7 +423,8 @@ async function processBlogBatch(batchId: string, items: BlogBatchItem[]): Promis
             createdAt: itemResult.result.startedAt,
             status: 'completed',
             summary: reportData.summary as unknown as Record<string, unknown>,
-            report: reportData as unknown as Record<string, unknown>
+            report: reportData as unknown as Record<string, unknown>,
+            expectedContent: itemResult.result.expected as unknown as Record<string, unknown> | undefined
           });
           markItemSettled(batchId, index, {
             status: 'done',
@@ -426,16 +434,71 @@ async function processBlogBatch(batchId: string, items: BlogBatchItem[]): Promis
         } else {
           markItemSettled(batchId, index, { status: 'error', error: itemResult.error ?? 'Unknown error.' });
         }
-        await safeDelete(item.docxPath);
+        await safeDeleteBatchItemFile(item);
       }
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('[runs] Blog batch aborted unexpectedly.', { batchId, message });
     markBatchAborted(batchId, message);
-    await Promise.all(items.map((item) => safeDelete(item.docxPath)));
+    await Promise.all(items.map((item) => safeDeleteBatchItemFile(item)));
   }
 }
+
+/**
+ * POST /api/runs/rerun
+ * Re-runs one or more previously-tested blogs against a fresh crawl of
+ * their live URL, WITHOUT re-uploading the .docx — reuses the approved
+ * content saved on each blog's history record (see AuditRecord.expectedContent)
+ * and the exact same batch pipeline as a normal upload-driven batch.
+ * Body: { auditIds: string[] }
+ * Responds { batchId, total, skipped } — `skipped` lists any selected audits
+ * that couldn't be re-run (not found, not a blog, or predate this feature).
+ */
+router.post('/rerun', async (req: Request, res: Response) => {
+  const rawIds: unknown = req.body?.auditIds;
+  const auditIds = Array.isArray(rawIds) ? rawIds.map(String).filter(Boolean) : [];
+
+  if (auditIds.length === 0) {
+    res.status(400).json({ error: 'At least one blog audit must be selected to re-run.' });
+    return;
+  }
+  if (auditIds.length > testConfig.maxBlogBatchSize) {
+    res.status(400).json({ error: `You can re-run at most ${testConfig.maxBlogBatchSize} blogs at a time.` });
+    return;
+  }
+
+  const items: BlogBatchItem[] = [];
+  const skipped: string[] = [];
+
+  for (const auditId of auditIds) {
+    const record = await getAuditRecord(auditId);
+    if (!record) { skipped.push(`Audit ${auditId} was not found.`); continue; }
+    if (record.type !== 'blog') { skipped.push(`"${record.filename}" is not a blog audit.`); continue; }
+    if (!record.url) { skipped.push(`"${record.filename}" has no live URL on record.`); continue; }
+    if (!record.expectedContent) {
+      skipped.push(`"${record.filename}" was tested before re-running was supported — upload it once more to enable this.`);
+      continue;
+    }
+    items.push({
+      docxSource: record.expectedContent as unknown as BlogContent,
+      url: record.url,
+      filename: record.filename
+    });
+  }
+
+  if (items.length === 0) {
+    res.status(400).json({ error: `None of the selected blogs could be re-run. ${skipped.join(' ')}`.trim() });
+    return;
+  }
+
+  const batchId = uuidv4();
+  createBatch(batchId, items.map(({ filename, url }) => ({ filename, url })));
+
+  res.json({ batchId, total: items.length, skipped });
+
+  void processBlogBatch(batchId, items);
+});
 
 // ── GET /api/runs/:id ─────────────────────────────────────────────────────────
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {

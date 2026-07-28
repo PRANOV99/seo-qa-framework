@@ -19,6 +19,14 @@ export interface AuditRecord {
   error?: string;
   summary: Record<string, unknown>;
   report: Record<string, unknown>;
+  /**
+   * The approved blog content parsed from the .docx (BlogContent, stored
+   * loosely like `summary`/`report`) — only present for completed blog
+   * runs. Lets the SAME blog be re-tested later against a fresh crawl of
+   * the live page without re-uploading the document (see POST
+   * /api/runs/rerun).
+   */
+  expectedContent?: Record<string, unknown>;
 }
 
 export async function ensureHistoryDir(): Promise<void> {

@@ -22,6 +22,10 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
       status: r.status,
       error: r.error,
       summary: r.summary,
+      // Lets the UI show a "Re-run" option only for blog audits that were
+      // saved with their approved content — older records predating that
+      // feature can't be re-run without a fresh upload.
+      hasExpectedContent: Boolean(r.expectedContent),
     }));
     res.json({ audits: list, total: list.length });
   } catch (error) {

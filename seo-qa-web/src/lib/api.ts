@@ -86,6 +86,10 @@ export interface AuditRecord {
   auditConfig?: AuditConfig;
   summary: AuditSummary;
   report: ReportData;
+  /** Present on a full blog record (GET /api/runs/:id, /api/history/:id) whose approved content was saved and can be re-run without re-uploading. Opaque here — only its presence matters. */
+  expectedContent?: unknown;
+  /** Present on the lightweight list (GET /api/history) in place of expectedContent itself — whether this blog audit can be re-run. */
+  hasExpectedContent?: boolean;
 }
 
 export interface HistoryList {
@@ -185,6 +189,21 @@ export async function postBlogBatch(files: File[], urls: string[]): Promise<{ ba
 
 export async function getBatchStatus(batchId: string): Promise<BatchStatus> {
   return request<BatchStatus>(`/runs/batch/${encodeURIComponent(batchId)}`);
+}
+
+/**
+ * Re-runs one or more previously-tested blogs against a fresh crawl of
+ * their live URL — no re-upload needed, reuses each blog's saved approved
+ * content. Returns a batch you poll/view exactly like a normal upload
+ * batch (getBatchStatus / the /results/batch/:batchId page).
+ * `skipped` lists any selected audits that couldn't be re-run (e.g. tested
+ * before this feature existed).
+ */
+export async function postRerunBatch(auditIds: string[]): Promise<{ batchId: string; total: number; skipped: string[] }> {
+  return request<{ batchId: string; total: number; skipped: string[] }>('/runs/rerun', {
+    method: 'POST',
+    body: JSON.stringify({ auditIds })
+  });
 }
 
 export function combinedBatchDownloadUrl(batchId: string): string {

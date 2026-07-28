@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { Download, Bug, ArrowLeft, ExternalLink } from 'lucide-react';
-import { getRun, downloadUrl, devBugReportUrl, type AuditRecord } from '../lib/api';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import { Download, Bug, RotateCw, ArrowLeft, ExternalLink } from 'lucide-react';
+import { getRun, downloadUrl, devBugReportUrl, postRerunBatch, type AuditRecord } from '../lib/api';
 import AuditSummaryCards from '../components/AuditSummaryCards';
 import SeoResultsTable from '../components/SeoResultsTable';
 import StatusBadge from '../components/StatusBadge';
@@ -13,10 +13,13 @@ const BOLD_EXTRA_PREFIX = 'Bold (extra)';
 
 export default function Results() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [record, setRecord] = useState<AuditRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('overview');
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState('');
 
   useEffect(() => {
     if (!id) return;
@@ -25,6 +28,19 @@ export default function Results() {
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [id]);
+
+  async function handleRerun() {
+    if (!record) return;
+    setRerunning(true);
+    setRerunError('');
+    try {
+      const { batchId } = await postRerunBatch([record.id]);
+      navigate(`/results/batch/${batchId}`);
+    } catch (e) {
+      setRerunError(e instanceof Error ? e.message : String(e));
+      setRerunning(false);
+    }
+  }
 
   if (loading) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 300, gap: 12 }}>
@@ -73,6 +89,16 @@ export default function Results() {
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>{record.filename}</h1>
           {record.url && <div className="text-muted text-sm">{record.url}</div>}
         </div>
+        {isBlog && Boolean(record.expectedContent) && (
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => void handleRerun()}
+            disabled={rerunning}
+            title="Re-test this blog against a fresh crawl of the live page, without re-uploading the document."
+          >
+            <RotateCw size={14} /> {rerunning ? 'Starting…' : 'Re-run This Blog'}
+          </button>
+        )}
         <a
           href={devBugReportUrl(record.id)}
           download={`bug-report-${record.id}.md`}
@@ -91,6 +117,7 @@ export default function Results() {
           <Download size={14} /> Download JSON
         </a>
       </div>
+      {rerunError && <div className="alert alert-danger" style={{ marginBottom: 20 }}>{rerunError}</div>}
 
       {/* Meta */}
       <div className="card card-body" style={{ marginBottom: 20, display: 'flex', gap: 24, flexWrap: 'wrap' }}>

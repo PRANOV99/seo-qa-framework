@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Link } from 'react-router-dom';
-import { Search, CheckCircle, XCircle, Clock, Download, GitCompare } from 'lucide-react';
-import { getHistory, downloadUrl, type AuditRecord } from '../lib/api';
+import { Link, useNavigate } from 'react-router-dom';
+import { Search, CheckCircle, XCircle, Clock, Download, GitCompare, RotateCw } from 'lucide-react';
+import { getHistory, downloadUrl, postRerunBatch, type AuditRecord } from '../lib/api';
 
 function timeAgo(iso: string): string {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -12,11 +12,17 @@ function timeAgo(iso: string): string {
 }
 
 export default function History() {
+  const navigate = useNavigate();
   const [records, setRecords] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch]   = useState('');
   const [typeFilter, setType] = useState('all');
   const [selected, setSelected] = useState<string[]>([]);
+
+  const [rerunSelected, setRerunSelected] = useState<string[]>([]);
+  const [rerunSubmitting, setRerunSubmitting] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
+  const [rerunSkipped, setRerunSkipped] = useState<string[] | null>(null);
 
   useEffect(() => {
     getHistory()
@@ -36,6 +42,31 @@ export default function History() {
 
   function toggleSelect(id: string) {
     setSelected(s => s.includes(id) ? s.filter(x => x !== id) : s.length >= 2 ? [s[1]!, id] : [...s, id]);
+  }
+
+  function toggleRerunSelect(id: string) {
+    setRerunSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  }
+
+  async function runRerun(auditIds: string[]) {
+    if (auditIds.length === 0) return;
+    setRerunSubmitting(true);
+    setRerunError(null);
+    setRerunSkipped(null);
+    try {
+      const { batchId, skipped } = await postRerunBatch(auditIds);
+      if (skipped.length > 0) {
+        // Some selected blogs couldn't be re-run (predate this feature,
+        // deleted, etc.) — let the user see why before jumping to the
+        // batch results for whatever DID get queued.
+        setRerunSkipped(skipped);
+      }
+      navigate(`/results/batch/${batchId}`);
+    } catch (err) {
+      setRerunError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRerunSubmitting(false);
+    }
   }
 
   return (
@@ -60,6 +91,32 @@ export default function History() {
       {selected.length === 1 && (
         <div className="alert alert-info" style={{ marginBottom: 16 }}>
           <span>Select one more audit to compare.</span>
+        </div>
+      )}
+
+      {/* Re-run banner */}
+      {rerunSelected.length > 0 && (
+        <div className="alert alert-info" style={{ marginBottom: 16, justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <span>🔁 {rerunSelected.length} blog{rerunSelected.length !== 1 ? 's' : ''} selected to re-run.</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setRerunSelected([])} disabled={rerunSubmitting}>
+              Clear
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={() => void runRerun(rerunSelected)} disabled={rerunSubmitting}>
+              {rerunSubmitting ? 'Starting…' : `Re-run Selected (${rerunSelected.length})`}
+            </button>
+          </div>
+        </div>
+      )}
+      {rerunError && (
+        <div className="alert alert-danger" style={{ marginBottom: 16 }}>{rerunError}</div>
+      )}
+      {rerunSkipped && rerunSkipped.length > 0 && (
+        <div className="alert alert-warning" style={{ marginBottom: 16 }}>
+          <div>Some selected blogs were skipped:</div>
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            {rerunSkipped.map((reason, i) => <li key={i} className="text-sm">{reason}</li>)}
+          </ul>
         </div>
       )}
 
@@ -104,13 +161,14 @@ export default function History() {
         <div className="section">
           <div className="section-header">
             <span className="section-title">{filtered.length} audit{filtered.length !== 1 ? 's' : ''}</span>
-            <span className="text-xs text-muted">Click checkboxes to select up to 2 for comparison</span>
+            <span className="text-xs text-muted">Compare: select up to 2 · Re-run: select any number of blogs</span>
           </div>
           <div className="table-wrapper" style={{ border: 'none', borderRadius: 0 }}>
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 36 }}></th>
+                  <th style={{ width: 36 }} title="Select for comparison"></th>
+                  <th style={{ width: 36 }} title="Select to re-run">🔁</th>
                   <th>Type</th>
                   <th>Source</th>
                   <th>Passed</th>
@@ -123,10 +181,12 @@ export default function History() {
               <tbody>
                 {filtered.map(r => {
                   const isSelected = selected.includes(r.id);
+                  const canRerun = r.type === 'blog' && r.status === 'completed' && r.hasExpectedContent;
+                  const isRerunSelected = rerunSelected.includes(r.id);
                   const passed = r.summary?.seoChecks?.passed ?? 0;
                   const failed = r.summary?.seoChecks?.failed ?? 0;
                   return (
-                    <tr key={r.id} style={{ background: isSelected ? '#f0f4ff' : undefined }}>
+                    <tr key={r.id} style={{ background: isSelected || isRerunSelected ? '#f0f4ff' : undefined }}>
                       <td>
                         <input
                           type="checkbox"
@@ -134,6 +194,17 @@ export default function History() {
                           onChange={() => toggleSelect(r.id)}
                           style={{ cursor: 'pointer', accentColor: 'var(--primary)', width: 15, height: 15 }}
                         />
+                      </td>
+                      <td>
+                        {canRerun && (
+                          <input
+                            type="checkbox"
+                            checked={isRerunSelected}
+                            onChange={() => toggleRerunSelect(r.id)}
+                            title="Select to re-run"
+                            style={{ cursor: 'pointer', accentColor: 'var(--primary)', width: 15, height: 15 }}
+                          />
+                        )}
                       </td>
                       <td>
                         <span className={`badge ${r.type === 'blog' ? 'badge-info' : 'badge-neutral'}`}>
@@ -167,6 +238,16 @@ export default function History() {
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap' }}>
                           <Link to={`/history/${r.id}`} className="btn btn-outline btn-sm">View</Link>
+                          {canRerun && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              title="Re-run this blog now"
+                              disabled={rerunSubmitting}
+                              onClick={() => void runRerun([r.id])}
+                            >
+                              <RotateCw size={13} />
+                            </button>
+                          )}
                           <a
                             href={downloadUrl(r.id)} download={`${r.id}.json`}
                             className="btn btn-ghost btn-sm" title="Download JSON"

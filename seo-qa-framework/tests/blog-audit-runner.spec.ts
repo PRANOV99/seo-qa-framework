@@ -7,6 +7,7 @@ import { strToU8, zipSync } from 'fflate';
 import { test, expect } from '../src/fixtures/test-fixtures.js';
 import { BlogAuditRunner } from '../src/runner/blog-audit-runner.js';
 import { BlogBatchRunner } from '../src/runner/blog-batch-runner.js';
+import { parseBlogDocx } from '../src/blog/docx-blog-parser.js';
 
 test.describe('BlogAuditRunner', () => {
   test.skip(
@@ -227,9 +228,42 @@ test.describe('BlogAuditRunner', () => {
       expect(result.kind).toBe('blog');
       expect(result.seoCheckResults.length).toBeGreaterThan(0);
       expect(result.seoCheckResults.every((check) => check.status === 'passed')).toBe(true);
+      // The parsed approved content is returned on every run (not just
+      // re-runs) so it can be persisted and reused later without a fresh
+      // upload — see the "re-run" test below.
+      expect(result.expected?.title).toBe('How to Bake Sourdough Bread');
     } finally {
       await rm(path.dirname(docxPath), { recursive: true, force: true });
     }
+  });
+
+  test('re-runs against a fresh crawl using already-parsed BlogContent, with no .docx file at all', async () => {
+    // This is exactly the "re-run" code path: parse once, keep the result,
+    // discard/never touch the original file again, then run (possibly much
+    // later) purely from the kept BlogContent.
+    const docxPath = await writeBlogDocx('for-rerun.docx', [
+      paragraph('Meta Title: How to Bake Sourdough Bread | Example Blog'),
+      paragraph('Meta Description: Learn how to bake sourdough bread at home with this step-by-step guide.'),
+      paragraph('SEO Slug: matching'),
+      heading(1, 'How to Bake Sourdough Bread'),
+      paragraph('This is the introduction paragraph.'),
+      heading(2, 'Ingredients'),
+      paragraph('Flour, water, salt, and a starter.')
+    ]);
+
+    let expectedContent;
+    try {
+      expectedContent = await parseBlogDocx(docxPath, matchingPath);
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+
+    const runner = new BlogAuditRunner();
+    const result = await runner.run(expectedContent, matchingPath, undefined, 'matching.docx');
+
+    expect(result.kind).toBe('blog');
+    expect(result.sourcePath).toBe('matching.docx');
+    expect(result.seoCheckResults.every((check) => check.status === 'passed')).toBe(true);
   });
 
   test('fails Meta Title, the missing H2, and the modified paragraph when the live page diverges from the approved document', async () => {
@@ -412,8 +446,8 @@ test.describe('BlogAuditRunner', () => {
     try {
       const batchRunner = new BlogBatchRunner();
       const results = await batchRunner.run([
-        { docxPath: matchingDocxPath, url: matchingPath, filename: 'matching.docx' },
-        { docxPath: headingEntitiesDocxPath, url: headingEntitiesPath, filename: 'heading-entities.docx' }
+        { docxSource: matchingDocxPath, url: matchingPath, filename: 'matching.docx' },
+        { docxSource: headingEntitiesDocxPath, url: headingEntitiesPath, filename: 'heading-entities.docx' }
       ]);
 
       expect(results.length).toBe(2);

@@ -2,14 +2,20 @@ import type { Browser } from 'playwright';
 import { BlogAuditRunner, type BlogAuditRunnerOptions } from './blog-audit-runner.js';
 import { BrowserManager } from '../playwright/browser-manager.js';
 import type { AuditRunResult } from '../types/audit-run-result.js';
+import type { BlogContent } from '../types/blog.js';
 import { logger } from '../logger/logger.js';
 
 /** Minimal shape BlogBatchRunner depends on for launching a shared browser — lets tests inject a fake in place of a real BrowserManager. */
 export type BrowserManagerLike = Pick<BrowserManager, 'launch' | 'close'>;
 
 export interface BlogBatchItem {
-  /** Absolute path to the uploaded .docx on disk. */
-  docxPath: string;
+  /**
+   * Either the absolute path to an uploaded .docx on disk (parsed fresh), or
+   * already-parsed BlogContent — used when re-running a previously-tested
+   * blog against a new crawl of the live page without re-uploading the
+   * document (see the `/api/runs/rerun` route).
+   */
+  docxSource: string | BlogContent;
   /** Live blog URL to validate this document against. */
   url: string;
   /** Original filename, for progress reporting and result labeling. */
@@ -89,7 +95,7 @@ export class BlogBatchRunner {
 
         let itemResult: BlogBatchItemResult;
         try {
-          const result = await this.runner.run(item.docxPath, item.url, browser);
+          const result = await this.runner.run(item.docxSource, item.url, browser, item.filename);
           itemResult = { filename: item.filename, url: item.url, status: 'done', result };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
