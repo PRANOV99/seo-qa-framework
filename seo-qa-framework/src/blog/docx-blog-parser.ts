@@ -80,21 +80,23 @@ function isMetadataLabelPhrase(text: string): boolean {
 // ── Heading-level suffix recognition ────────────────────────────────────────────
 
 /**
- * A trailing "(H1)".."(H4)" annotation some content briefs use to mark a
- * heading's level directly in its visible text — often on a FAQ question
- * that's otherwise just a plain paragraph, e.g. "What is X? (H4)" — any
- * spacing inside the parens, case-insensitive.
+ * A trailing "(H1)".."(H4)" or "- H1".."- H4" annotation some content briefs
+ * use to mark a heading's level directly in its visible text — often on a
+ * FAQ question that's otherwise just a plain paragraph, e.g. "What is X?
+ * (H4)" or a real Word heading's own text, e.g. "Blog Title - H1" — any
+ * spacing inside the parens or around the dash, any hyphen/en dash/em dash,
+ * case-insensitive.
  */
-const HEADING_LEVEL_SUFFIX = /\s*\(\s*h\s*([1-4])\s*\)\s*$/i;
+const HEADING_LEVEL_SUFFIX = /\s*(?:\(\s*h\s*([1-4])\s*\)|[-–—]\s*h\s*([1-4]))\s*$/i;
 
-/** Detects a trailing "(H1)".."(H4)" suffix and returns its level, or undefined if there isn't one. */
+/** Detects a trailing "(H1)".."(H4)" / "- H1".."- H4" suffix and returns its level, or undefined if there isn't one. */
 function detectHeadingSuffixLevel(text: string): 1 | 2 | 3 | 4 | undefined {
   const match = HEADING_LEVEL_SUFFIX.exec(text);
   if (!match) return undefined;
-  return Number(match[1]) as 1 | 2 | 3 | 4;
+  return Number(match[1] ?? match[2]) as 1 | 2 | 3 | 4;
 }
 
-/** Strips a trailing "(H1)".."(H4)" suffix, if present, leaving only the visible heading text. Exported for direct unit testing. */
+/** Strips a trailing "(H1)".."(H4)" / "- H1".."- H4" suffix, if present, leaving only the visible heading text. Exported for direct unit testing. */
 export function stripHeadingSuffix(text: string): string {
   return text.replace(HEADING_LEVEL_SUFFIX, '').trim();
 }

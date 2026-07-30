@@ -903,6 +903,54 @@ describe('parseBlogDocx — heading-level (H#) suffix', () => {
     assert.ok(!content.boldPhrases.some((p) => p.includes('(H2)')),
       'The raw "(H2)" suffix must never appear in a stored bold phrase.');
   });
+
+  it('strips a dash-form "- H1"/"- H2" suffix (no parens), the convention some content briefs use instead', async () => {
+    const docxPath = await writeBlogDocx('dash-suffix.docx', [
+      heading(1, 'The Parent’s Role In Homework: How Much Help Is Too Much? - H1'),
+      heading(2, 'Helping Is Not The Same As Doing - H2')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.title, 'The Parent’s Role In Homework: How Much Help Is Too Much?');
+    assert.deepEqual(content.h2Headings, ['Helping Is Not The Same As Doing']);
+  });
+
+  it('strips dash-form suffixes regardless of internal spacing, dash variant, or case', async () => {
+    const variants = ['- H2', '-H2', '– H2', '— h2', '-  h2'];
+    for (const suffix of variants) {
+      const docxPath = await writeBlogDocx(`dash-suffix-variant-${variants.indexOf(suffix)}.docx`, [
+        heading(1, 'My Post'),
+        heading(2, `Why Mokila Has Arrived ${suffix}`)
+      ]);
+
+      const content = await parseBlogDocx(docxPath);
+
+      assert.deepEqual(content.h2Headings, ['Why Mokila Has Arrived'],
+        `Suffix "${suffix}" should be stripped`);
+    }
+  });
+
+  it('strips a dash-form suffix from a bold phrase', async () => {
+    const docxPath = await writeBlogDocxWithBold('bold-with-dash-suffix.docx', [
+      { kind: 'heading', level: 1, text: 'My Post' },
+      {
+        kind: 'paragraph-with-bold',
+        parts: [
+          { text: 'This has ', bold: false },
+          { text: 'a bold phrase - H2', bold: true },
+          { text: ' in it.', bold: false }
+        ]
+      }
+    ]);
+
+    const content = await parseBlogDocx(docxPath, 'https://example.com/blog');
+
+    assert.ok(content.boldPhrases.includes('a bold phrase'),
+      `Expected suffix-stripped bold phrase. Got: ${JSON.stringify(content.boldPhrases)}`);
+    assert.ok(!content.boldPhrases.some((p) => /H2$/i.test(p)),
+      'The raw "- H2" suffix must never appear in a stored bold phrase.');
+  });
 });
 
 // ── FAQ parsing ──────────────────────────────────────────────────────────────────
