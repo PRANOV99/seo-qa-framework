@@ -64,7 +64,7 @@ export default function Upload() {
 
   // Blog Testing — batch of documents, each with its own live URL
   const [blogItems, setBlogItems] = useState<BlogDraftItem[]>([]);
-  const [maxBatchSize, setMaxBatchSize] = useState(5);
+  const [maxBatchSize, setMaxBatchSize] = useState(8);
 
   useEffect(() => {
     getBatchConfig().then(cfg => setMaxBatchSize(cfg.maxBatchSize)).catch(() => { /* keep default */ });

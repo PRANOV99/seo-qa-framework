@@ -19,5 +19,6 @@ export const testConfig = {
     width: env.VIEWPORT_WIDTH,
     height: env.VIEWPORT_HEIGHT
   },
-  maxBlogBatchSize: env.MAX_BLOG_BATCH_SIZE
+  maxBlogBatchSize: env.MAX_BLOG_BATCH_SIZE,
+  blogBatchConcurrency: env.BLOG_BATCH_CONCURRENCY
 } as const;

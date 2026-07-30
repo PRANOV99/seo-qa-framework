@@ -29,6 +29,30 @@ async function waitForBlogPageReady(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle', { timeout: BLOG_NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
 }
 
+/**
+ * Resource types that carry real page weight (hero images, web fonts, video/
+ * audio embeds) but contribute nothing to blog content comparison — every
+ * check here reads DOM text/structure (headings, paragraphs, links, bold
+ * spans), never rendered pixels, so blocking these cuts load time
+ * substantially on image-heavy pages without touching what gets extracted.
+ * `<img>`/`<video>` tags and their attributes (e.g. `alt` text) stay in the
+ * DOM either way — only the byte fetch is aborted. Stylesheets and scripts
+ * are deliberately left alone: some pages gate content visibility/behavior
+ * (accordions, lazy sections) behind them, and this is a blog-only helper
+ * rather than a change to the shared PageHelper, which the Website SEO Audit
+ * workflow also depends on.
+ */
+const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font']);
+
+async function blockHeavyResources(page: Page): Promise<void> {
+  await page.route('**/*', (route) => {
+    if (BLOCKED_RESOURCE_TYPES.has(route.request().resourceType())) {
+      return route.abort();
+    }
+    return route.continue();
+  });
+}
+
 export interface BlogAuditRunnerOptions {
   /** Browser engine used to load the live blog page. Defaults to chromium. */
   browserName?: SupportedBrowserName;
@@ -114,6 +138,7 @@ export class BlogAuditRunner {
         const page = await context.newPage();
         const pageHelper = new PageHelper(page);
 
+        await blockHeavyResources(page);
         await pageHelper.goto(url);
         await waitForBlogPageReady(page);
 

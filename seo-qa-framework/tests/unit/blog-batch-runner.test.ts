@@ -13,7 +13,7 @@ function items(count: number): BlogBatchItem[] {
 }
 
 describe('BlogBatchRunner', () => {
-  it('processes every item sequentially, in order, never in parallel', async () => {
+  it('runs items with bounded concurrency instead of one at a time', async () => {
     const callOrder: string[] = [];
     let inFlight = 0;
     let maxInFlight = 0;
@@ -30,14 +30,56 @@ describe('BlogBatchRunner', () => {
       }
     };
 
-    const batch = new BlogBatchRunner({}, fakeRunner);
-    const results = await batch.run(items(3));
+    // Explicit concurrency of 2 (4th constructor arg) so the assertion isn't
+    // tied to whatever testConfig.blogBatchConcurrency happens to default to.
+    const batch = new BlogBatchRunner({}, fakeRunner, undefined, 2);
+    const results = await batch.run(items(4));
 
-    assert.deepEqual(callOrder, ['/tmp/blog-1.docx', '/tmp/blog-2.docx', '/tmp/blog-3.docx'],
-      'Items must be started in order.');
-    assert.equal(maxInFlight, 1, 'Items must never run concurrently.');
-    assert.equal(results.length, 3);
+    assert.equal(callOrder.length, 4, 'Every item must still be started exactly once.');
+    assert.deepEqual([...callOrder].sort(), ['/tmp/blog-1.docx', '/tmp/blog-2.docx', '/tmp/blog-3.docx', '/tmp/blog-4.docx']);
+    assert.equal(maxInFlight, 2, 'Concurrency must reach the configured cap, not run strictly one at a time.');
+    assert.equal(results.length, 4);
     assert.ok(results.every((r) => r.status === 'done'));
+  });
+
+  it('never runs more items at once than the configured concurrency cap', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const fakeRunner: BlogRunnerLike = {
+      run: async (docxSource) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return buildSampleAuditRunResult({ sourcePath: docxSource as string, kind: 'blog' });
+      }
+    };
+
+    const batch = new BlogBatchRunner({}, fakeRunner, undefined, 3);
+    await batch.run(items(8));
+
+    assert.ok(maxInFlight <= 3, `Expected at most 3 concurrent items, got ${maxInFlight}.`);
+  });
+
+  it('returns results in the original item order, even when later items finish first', async () => {
+    const fakeRunner: BlogRunnerLike = {
+      run: async (docxSource) => {
+        const docxPath = docxSource as string;
+        // The first item takes longest, so without index-based ordering the
+        // faster later items would settle (and be pushed) first.
+        const delay = docxPath.includes('blog-1') ? 20 : 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return buildSampleAuditRunResult({ sourcePath: docxPath, kind: 'blog' });
+      }
+    };
+
+    const batch = new BlogBatchRunner({}, fakeRunner, undefined, 4);
+    const results = await batch.run(items(4));
+
+    assert.deepEqual(results.map((r) => r.result?.sourcePath), [
+      '/tmp/blog-1.docx', '/tmp/blog-2.docx', '/tmp/blog-3.docx', '/tmp/blog-4.docx'
+    ]);
   });
 
   it('isolates a failing item so the rest of the batch still completes', async () => {
@@ -61,7 +103,7 @@ describe('BlogBatchRunner', () => {
     assert.equal(results[2]?.status, 'done', 'The item after the failure must still run.');
   });
 
-  it('reports start and completion progress for every item, in order', async () => {
+  it('reports start and completion progress for every item, each with its own correct index', async () => {
     const fakeRunner: BlogRunnerLike = {
       run: async (docxSource) => buildSampleAuditRunResult({ sourcePath: docxSource as string, kind: 'blog' })
     };
@@ -79,8 +121,10 @@ describe('BlogBatchRunner', () => {
       }
     });
 
-    assert.deepEqual(started, [0, 1, 2]);
-    assert.deepEqual(completed, [0, 1, 2]);
+    // Concurrent execution means start/completion order isn't guaranteed —
+    // only that every index is reported exactly once, on each side.
+    assert.deepEqual([...started].sort(), [0, 1, 2]);
+    assert.deepEqual([...completed].sort(), [0, 1, 2]);
   });
 
   it('launches exactly ONE shared browser for the whole batch and passes it to every item', async () => {

@@ -17,7 +17,9 @@ const envSchema = z.object({
   VIEWPORT_WIDTH: z.coerce.number().int().positive().default(1440),
   VIEWPORT_HEIGHT: z.coerce.number().int().positive().default(900),
   /** Max number of blog documents that can be submitted together in one Blog Testing batch (web API). */
-  MAX_BLOG_BATCH_SIZE: z.coerce.number().int().positive().default(5)
+  MAX_BLOG_BATCH_SIZE: z.coerce.number().int().positive().default(8),
+  /** How many blogs in a batch are crawled/compared at the same time, sharing one browser (each still gets its own isolated BrowserContext). */
+  BLOG_BATCH_CONCURRENCY: z.coerce.number().int().positive().default(4)
 });
 
 export const env = envSchema.parse(process.env);
