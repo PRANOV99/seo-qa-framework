@@ -1218,6 +1218,24 @@ describe('compareBlogContent — bold formatting', () => {
     assert.equal(matched?.status, 'passed');
     assert.equal(extras.length, 1, `Got: ${JSON.stringify(extras)}`);
   });
+
+  it('SKIPS (not FAILS) a bold phrase that is also a hyperlink anchor text, even though the live page renders that link without bold', () => {
+    // A hyperlink is its own distinct visual treatment (underline/color) —
+    // it is never required to also be bold, so a docx author bolding a link's
+    // anchor text must not force a FAIL when the live page's link isn't bold.
+    const expected: BlogContent = {
+      ...baseExpected,
+      links: [...baseExpected.links, makeLink('read our full guide', 'https://example.com/guides/full')],
+      boldPhrases: [...baseExpected.boldPhrases, 'read our full guide']
+    };
+    const actual = exactMatch(expected);
+    actual.boldPhrases = baseExpected.boldPhrases; // link text present as a link, but NOT bold
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const bold = results.find((r) => r.checkType === 'Bold: "read our full guide"');
+
+    assert.equal(bold?.status, 'skipped', `Got: ${JSON.stringify(bold)}`);
+  });
 });
 
 // ── Difference highlighting (word-level diff beyond paragraphs) ────────────────

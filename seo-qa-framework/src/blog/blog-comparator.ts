@@ -57,7 +57,7 @@ export function compareBlogContent(
     ...compareLinks(url, expected.links, actual.links),
 
     // ── Bold formatting ───────────────────────────────────────────────────────
-    ...compareBoldPhrases(url, expected.boldPhrases, actual.boldPhrases, actualHeadingTexts(actual)),
+    ...compareBoldPhrases(url, expected.boldPhrases, actual.boldPhrases, actualHeadingTexts(actual), expected.links),
   ];
 
   return results;
@@ -607,12 +607,20 @@ function compareLinks(
  * the heading comparison. `actualHeadings` reuses the same normalized
  * heading text already extracted from the live page (title + H2/H3/H4) so
  * that case is recognized as present rather than reported missing.
+ *
+ * A docx author also sometimes bolds a phrase that is ALSO the anchor text
+ * of a hyperlink (e.g. a bolded call-to-action link). A hyperlink is its own
+ * distinct visual treatment on a live page, not necessarily bold, so it is
+ * never required to also render bold; expectedLinks (the approved
+ * document's own hyperlink anchor texts) is used to skip those phrases
+ * entirely rather than failing them when the live link isn't bold.
  */
 function compareBoldPhrases(
   url: string,
   expected: string[],
   actual: string[],
-  actualHeadings: string[]
+  actualHeadings: string[],
+  expectedLinks: BlogLink[]
 ): SeoCheckResult[] {
   const results: SeoCheckResult[] = [];
 
@@ -622,6 +630,7 @@ function compareBoldPhrases(
     actualCounts.set(norm, (actualCounts.get(norm) ?? 0) + 1);
   }
   const normalizedActualHeadingSet = new Set(actualHeadings.map(normalizeForComparison));
+  const normalizedLinkTextSet = new Set(expectedLinks.map((link) => normalizeForComparison(link.text)));
 
   for (const phrase of expected) {
     const norm    = normalizeForComparison(phrase);
@@ -644,6 +653,14 @@ function compareBoldPhrases(
         status: 'passed',
         expected: phrase, actual: phrase,
         message: 'Bold phrase matches a heading on the live page (rendered bold via heading styling, not a literal bold tag).'
+      });
+    } else if (normalizedLinkTextSet.has(norm)) {
+      results.push({
+        url,
+        checkType: `Bold: "${preview}"`,
+        status: 'skipped',
+        expected: phrase, actual: undefined,
+        message: 'Bold phrase is also a hyperlink anchor text; hyperlinks are not required to also render bold.'
       });
     } else {
       results.push({
