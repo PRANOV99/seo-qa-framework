@@ -12,14 +12,7 @@ function blogResults(overrides: Record<string, SeoCheckResult> = {}): SeoCheckRe
     metaTitle: {
       url: BLOG_URL, checkType: 'Meta Title', status: 'failed',
       expected: 'How to Bake Sourdough Bread', actual: 'How to Bake Rye Bread',
-      message: 'Meta Title has changed. Expected "How to Bake Sourdough Bread" but found "How to Bake Rye Bread".',
-      diff: [
-        { type: 'same', expected: 'How', actual: 'How' },
-        { type: 'same', expected: 'to', actual: 'to' },
-        { type: 'same', expected: 'Bake', actual: 'Bake' },
-        { type: 'changed', expected: 'Sourdough', actual: 'Rye' },
-        { type: 'same', expected: 'Bread', actual: 'Bread' }
-      ]
+      message: 'Meta Title has changed. Expected "How to Bake Sourdough Bread" but found "How to Bake Rye Bread".'
     },
     h2: {
       url: BLOG_URL, checkType: 'H2 #1', status: 'failed',
@@ -68,68 +61,46 @@ describe('generateDevBugReport', () => {
     assert.doesNotMatch(report, /Must Fix/);
   });
 
-  it('groups failed checks under a "Must Fix" section, ahead of a "Worth Reviewing" warnings section', () => {
+  it('groups failed checks under a "Must Fix" section, ahead of a "Warnings" section', () => {
     const reportData = buildBlogReportData(blogResults());
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
-    const mustFixIndex = report.indexOf('## 🔴 Must Fix');
-    const warningIndex = report.indexOf('## 🟡 Worth Reviewing');
-    const passedIndex  = report.indexOf('## ✅ Already Correct');
+    const mustFixIndex = report.indexOf('## Must Fix');
+    const warningIndex = report.indexOf('## Warnings');
+    const passedIndex  = report.indexOf('## Passed');
 
     assert.ok(mustFixIndex !== -1 && warningIndex !== -1 && passedIndex !== -1);
     assert.ok(mustFixIndex < warningIndex, 'Failed issues must come before warnings.');
     assert.ok(warningIndex < passedIndex, 'Warnings must come before the passed summary.');
   });
 
-  it('categorizes issues into Metadata, Headings, Hyperlinks, and Bold Text sections', () => {
+  it('renders each issue as just a check-name heading, an Expected line, and an Actual line', () => {
     const reportData = buildBlogReportData(blogResults());
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
-    assert.match(report, /### Metadata/);
-    assert.match(report, /### Headings/);
-    assert.match(report, /### Hyperlinks/);
-    assert.match(report, /### Bold Text/);
+    assert.match(report, /### Meta Title\nExpected: How to Bake Sourdough Bread\nActual: How to Bake Rye Bread/);
   });
 
-  it('includes the live URL, expected value, actual value, and message for a failing check', () => {
+  it('renders "(missing from the live page)" as Actual when there is no live value to compare against', () => {
     const reportData = buildBlogReportData(blogResults());
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
-    assert.match(report, /\*\*URL:\*\* https:\/\/example\.com\/blog\/sourdough/);
-    assert.match(report, /How to Bake Sourdough Bread/);
-    assert.match(report, /How to Bake Rye Bread/);
-    assert.match(report, /Meta Title has changed/);
+    assert.match(report, /### H2 #1\nExpected: Ingredients List\nActual: \(missing from the live page\)/);
   });
 
-  it('renders a git-style diff block with the word-level change for a genuine text mismatch', () => {
+  it('includes the live URL once, in the overview, not repeated per issue', () => {
     const reportData = buildBlogReportData(blogResults());
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
-    assert.match(report, /```diff/);
-    assert.match(report, /- How to Bake Sourdough Bread/);
-    assert.match(report, /\+ How to Bake Rye Bread/);
-    assert.match(report, /"Sourdough" → "Rye"/);
+    assert.match(report, new RegExp(`Live URL: ${BLOG_URL}`));
   });
 
-  it('omits the diff block entirely when there is no live value to compare against (content missing)', () => {
+  it('contains no emoji', () => {
     const reportData = buildBlogReportData(blogResults());
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
-    const h2Section = report.slice(report.indexOf('H2 #1'), report.indexOf('H2 #1') + 400);
-    assert.doesNotMatch(h2Section, /```diff/);
-    assert.match(h2Section, /is missing from the live page/);
-  });
-
-  it('omits the diff block when expected and actual are identical (e.g. a "moved" paragraph)', () => {
-    const reportData = buildBlogReportData(blogResults());
-    const report = generateDevBugReport(reportData, { url: BLOG_URL });
-
-    const paragraphHeading = 'The sourdough starter needs regular feeding';
-    const start = report.indexOf(paragraphHeading);
-    const section = report.slice(start, start + 500);
-
-    assert.doesNotMatch(section, /```diff/, 'A diff of identical expected/actual text is pure noise.');
-    assert.match(section, /has moved/);
+    // Covers the emoji ranges previously used in this report (bug/warning/check/etc. glyphs).
+    assert.doesNotMatch(report, /[\u{1F300}-\u{1FAFF}✅❌⚠️]/u);
   });
 
   it('does not itemize passed checks — only summarizes the count and check names', () => {
@@ -137,29 +108,15 @@ describe('generateDevBugReport', () => {
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
     assert.match(report, /Canonical URL/);
-    // Passed checks should not get their own "#### N." issue block.
-    const passedSection = report.slice(report.indexOf('## ✅ Already Correct'));
-    assert.doesNotMatch(passedSection, /#### \d/);
-  });
-
-  it('appends a machine-readable JSON block containing every failed and warning issue, none of the passed ones', () => {
-    const reportData = buildBlogReportData(blogResults());
-    const report = generateDevBugReport(reportData, { url: BLOG_URL });
-
-    const jsonMatch = report.match(/```json\n([\s\S]*?)\n```/);
-    assert.ok(jsonMatch, 'Expected a fenced JSON block.');
-
-    const issues = JSON.parse(jsonMatch![1]!) as Array<Record<string, unknown>>;
-    assert.equal(issues.length, 5, 'Expected exactly the 4 failed + 1 warning issues, not the passed one.');
-    assert.ok(issues.every((issue) => issue['severity'] === 'failed' || issue['severity'] === 'warning'));
-    assert.ok(issues.some((issue) => issue['checkType'] === 'Meta Title' && issue['category'] === 'Metadata'));
+    const passedSection = report.slice(report.indexOf('## Passed'));
+    assert.doesNotMatch(passedSection, /### /);
   });
 
   it('explicitly scopes the report to the live website, not this tool\'s own codebase', () => {
     const reportData = buildBlogReportData(blogResults());
     const report = generateDevBugReport(reportData, { url: BLOG_URL });
 
-    assert.match(report, /belongs? in the website\/CMS/i);
+    assert.match(report, /belongs? to the website\/CMS|belongs? in the website\/CMS/i);
   });
 
   it('still produces a sensible report for a sheet (non-blog) audit', () => {
@@ -167,6 +124,5 @@ describe('generateDevBugReport', () => {
     const report = generateDevBugReport(reportData, { url: 'https://example.com/about' });
 
     assert.match(report, /Missing H1/);
-    assert.match(report, /H1 tag is missing/);
   });
 });

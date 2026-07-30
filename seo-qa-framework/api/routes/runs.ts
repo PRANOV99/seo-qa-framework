@@ -358,23 +358,23 @@ router.get('/batch/:id/dev-report', async (req: Request, res: Response) => {
   }
 
   const lines: string[] = [];
-  lines.push('# 🐛 Blog Content Bug Report — Batch', '');
+  lines.push('# Blog Content Bug Report — Batch', '');
   lines.push(
-    `> Combined report for **${batch.total} blog(s)** tested together. Each blog's issues are in its own section ` +
+    `Combined report for ${batch.total} blog(s) tested together. Each blog's issues are in its own section ` +
     'below, in the exact same format as a single-blog report — every fix described belongs in the website/CMS ' +
     'that serves that blog\'s live URL, not in the seo-qa-framework tool itself.',
     ''
   );
 
   for (const item of batch.items) {
-    lines.push('---', '', `## 📄 ${item.filename}`, '');
+    lines.push('---', '', `## ${item.filename}`, '');
     if (item.status === 'error' || !item.auditId) {
-      lines.push(`⚠️ This blog could not be tested: ${item.error ?? 'unknown error'}.`, '');
+      lines.push(`This blog could not be tested: ${item.error ?? 'unknown error'}.`, '');
       continue;
     }
     const record = await getAuditRecord(item.auditId);
     if (!record) {
-      lines.push('⚠️ This blog\'s audit record could not be found.', '');
+      lines.push('This blog\'s audit record could not be found.', '');
       continue;
     }
     // Drop this section's own top-level "# 🐛 Blog Content Bug Report" /
