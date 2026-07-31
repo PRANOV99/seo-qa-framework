@@ -89,6 +89,63 @@ describe('Recommendation sheet detection (CSV)', () => {
     assert.ok(entries.some((row) => row.issueType === 'redirect'));
     assert.ok(entries.some((row) => row.issueType === 'brokenLink'));
   });
+
+  it('recognizes "Source Page URL" as the URL column (real JRC recommendation-sheet convention)', async () => {
+    const filePath = await writeTempFile(
+      'source-page-url.csv',
+      [
+        'Source Page URL,Image URL,Image Type,Optimised Alt Text',
+        'https://example.com/,https://cdn.example.com/hero.webp,image/webp,A hero banner of the product'
+      ].join('\n')
+    );
+
+    const result = await new CsvAuditSheetParser().parse(filePath);
+
+    assert.equal(result.mode, 'recommendation');
+    assert.equal(result.detectedColumns.url, 'Source Page URL');
+    const entries = result.rows.filter((row) => row.issueType === 'imageAlt');
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.url, 'https://example.com/',
+      'The row\'s URL must be the page the image appears on, not the image\'s own asset URL.');
+  });
+
+  it('skips a row whose detected URL column is blank instead of misattributing it to another URL-shaped cell in the row', async () => {
+    const filePath = await writeTempFile(
+      'blank-url-cell.csv',
+      [
+        'Source Page URL,Image URL,Optimised Alt Text',
+        // No page this image appears on (e.g. a shared/global asset) — must
+        // be skipped, not attributed to the Image URL cell instead.
+        ',https://cdn.example.com/icon.webp,An icon'
+      ].join('\n')
+    );
+
+    const result = await new CsvAuditSheetParser().parse(filePath);
+
+    assert.equal(result.rows.length, 0, 'A row with no page URL has nothing to check and must be dropped.');
+  });
+
+  it('does not treat a "Chars"/"Count" metadata column as a second suggested-value field for the same check', async () => {
+    const filePath = await writeTempFile(
+      'title-chars.csv',
+      [
+        'Current URL,Suggested Meta Title,Title Chars,Current meta description,Suggested Meta Description',
+        'https://example.com/,New Home Title,54,Old description that is live today,A better new description'
+      ].join('\n')
+    );
+
+    const result = await new CsvAuditSheetParser().parse(filePath);
+
+    assert.equal(result.mode, 'recommendation');
+    const titleEntries = result.rows.filter((row) => row.issueType === 'title');
+    assert.equal(titleEntries.length, 1, 'Only "Suggested Meta Title" should produce a title check, not "Title Chars" too.');
+    assert.equal(titleEntries[0]?.expectedValue, 'New Home Title');
+
+    const descriptionEntries = result.rows.filter((row) => row.issueType === 'metaDescription');
+    assert.equal(descriptionEntries.length, 1,
+      'Only "Suggested Meta Description" should produce a check, not the "Current meta description" baseline column.');
+    assert.equal(descriptionEntries[0]?.expectedValue, 'A better new description');
+  });
 });
 
 describe('Recommendation sheet detection (XLSX)', () => {

@@ -19,6 +19,7 @@ const columnAliases: Record<AuditColumnKey, string[]> = {
   url: [
     'url',
     'page url',
+    'source page url',
     'page',
     'address',
     'landing page',
@@ -190,13 +191,27 @@ function detectSheetMode(
   return 'issueBased';
 }
 
+/**
+ * A column whose header marks it as measurement metadata ("Title Chars",
+ * "Desc Chars", "Char Count") or an explicitly BEFORE/baseline value
+ * ("Current Meta Description", "Existing Alt Text") rather than an actual
+ * suggested fix — real-world recommendation sheets commonly place these
+ * alongside their "Suggested X" counterpart for the same field, and their
+ * header still contains that field's keyword (e.g. "Title Chars" contains
+ * "title"), so without this guard they'd be wrongly detected as a second,
+ * bogus suggested-value column for the same issue type.
+ */
+function isNonRecommendationMetadataHeader(header: string): boolean {
+  return /\b(chars?|count|length)\b/i.test(header) || /\b(current|existing)\b/i.test(header);
+}
+
 function detectRecommendationFieldColumns(
   headers: string[]
 ): Array<{ index: number; issueType: SeoIssueType; label: string }> {
   const matches: Array<{ index: number; issueType: SeoIssueType; label: string }> = [];
 
   headers.forEach((header, index) => {
-    if (!header) {
+    if (!header || isNonRecommendationMetadataHeader(header)) {
       return;
     }
 
@@ -225,7 +240,13 @@ function normalizeRecommendationDataRow(
   sourceRowNumber: number
 ): SeoAuditRow[] {
   const raw = toRawRow(row, headers);
-  const url = getValue(row, urlIndex) ?? findUrlInRow(row);
+  // Only fall back to scanning the whole row for a URL when there's no
+  // detected URL column at all — when the column IS known but this row's
+  // cell is simply blank (e.g. an image with no page it appears on), that
+  // row has nothing to check and must be skipped, not silently reattributed
+  // to some other URL-shaped cell elsewhere in the row (e.g. an image asset
+  // URL in an image-alt-text sheet).
+  const url = urlIndex !== undefined ? getValue(row, urlIndex) : findUrlInRow(row);
 
   if (!url) {
     return [];
@@ -313,7 +334,11 @@ function normalizeDataRow(
   sourceRowNumber: number
 ): SeoAuditRow | undefined {
   const raw = toRawRow(row, headers);
-  const url = getValue(row, columnIndexes.url) ?? findUrlInRow(row);
+  // See the equivalent comment in normalizeRecommendationDataRow: only scan
+  // the whole row for a URL when no URL column was detected at all — a
+  // detected column with a genuinely blank cell means this row has nothing
+  // to check, not "look elsewhere in the row for something URL-shaped".
+  const url = columnIndexes.url !== undefined ? getValue(row, columnIndexes.url) : findUrlInRow(row);
   const checkType = getValue(row, columnIndexes.checkType) ?? inferCheckType(row, columnIndexes.url);
 
   if (!url || !checkType) {
