@@ -20,20 +20,22 @@ services:
         # Must match your Vercel frontend's real origin (no trailing slash).
         # Update this if your Vercel URL ever changes.
         value: https://seo-qa-framework.vercel.app
-      # UPLOAD_DIR and HISTORY_DIR both live under /tmp because Render Free
-      # web services cannot attach persistent disks — every path outside
-      # the deployed image is ephemeral and is wiped on every restart or
-      # redeploy either way, so there's no downside to being explicit about
-      # it. Uploaded audit sheets are meant to be transient regardless
-      # (deleted right after parsing). Audit *history* is genuinely lost on
-      # restart with this setup; see the note in the chat response for how
-      # to make it durable if you need that (Render Postgres, free tier
-      # available, is the natural next step — not implemented here since
-      # it's a bigger change than "make Playwright work").
+      # UPLOAD_DIR lives under /tmp because Render Free web services cannot
+      # attach persistent disks — every path outside the deployed image is
+      # ephemeral and is wiped on every restart or redeploy either way, so
+      # there's no downside to being explicit about it. Uploaded audit
+      # sheets are meant to be transient regardless (deleted right after
+      # parsing).
       - key: UPLOAD_DIR
         value: /tmp/seo-qa-uploads
-      - key: HISTORY_DIR
-        value: /tmp/seo-qa-history
+      # Audit *history* used to live under /tmp too and was genuinely lost
+      # on every restart/redeploy — it now persists in PostgreSQL (Neon)
+      # instead, so HISTORY_DIR is no longer used by the API at all.
+      # DATABASE_URL is intentionally NOT set here — `sync: false` means
+      # Render prompts for it once in the dashboard instead of it living in
+      # this committed file. Set it to the Neon connection string.
+      - key: DATABASE_URL
+        sync: false
       - key: HEADLESS
         value: "true"
       - key: LOG_LEVEL

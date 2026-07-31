@@ -1,13 +1,4 @@
-import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export const HISTORY_DIR = process.env.HISTORY_DIR
-  ? path.resolve(process.env.HISTORY_DIR)
-  : path.join(__dirname, '..', 'history');
+import { pool } from './db.js';
 
 export interface AuditRecord {
   id: string;
@@ -29,44 +20,76 @@ export interface AuditRecord {
   expectedContent?: Record<string, unknown>;
 }
 
-export async function ensureHistoryDir(): Promise<void> {
-  await mkdir(HISTORY_DIR, { recursive: true });
+interface AuditRecordRow {
+  id: string;
+  type: string;
+  filename: string;
+  url: string | null;
+  created_at: Date;
+  status: string;
+  error: string | null;
+  summary: Record<string, unknown>;
+  report: Record<string, unknown>;
+  expected_content: Record<string, unknown> | null;
 }
 
+function rowToRecord(row: AuditRecordRow): AuditRecord {
+  return {
+    id: row.id,
+    type: row.type as AuditRecord['type'],
+    filename: row.filename,
+    url: row.url ?? undefined,
+    createdAt: row.created_at.toISOString(),
+    status: row.status as AuditRecord['status'],
+    error: row.error ?? undefined,
+    summary: row.summary,
+    report: row.report,
+    expectedContent: row.expected_content ?? undefined
+  };
+}
+
+/** Inserts a new audit record, or overwrites one with the same id (re-saving under an existing id is not expected in practice — every run mints a fresh uuid — but kept idempotent rather than erroring). */
 export async function saveAuditRecord(record: AuditRecord): Promise<void> {
-  await ensureHistoryDir();
-  const filename = `audit-${record.id}.json`;
-  await writeFile(
-    path.join(HISTORY_DIR, filename),
-    JSON.stringify(record, null, 2),
-    'utf8'
+  await pool.query(
+    `INSERT INTO audit_records (id, type, filename, url, created_at, status, error, summary, report, expected_content)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (id) DO UPDATE SET
+       type = EXCLUDED.type,
+       filename = EXCLUDED.filename,
+       url = EXCLUDED.url,
+       created_at = EXCLUDED.created_at,
+       status = EXCLUDED.status,
+       error = EXCLUDED.error,
+       summary = EXCLUDED.summary,
+       report = EXCLUDED.report,
+       expected_content = EXCLUDED.expected_content`,
+    [
+      record.id,
+      record.type,
+      record.filename,
+      record.url ?? null,
+      record.createdAt,
+      record.status,
+      record.error ?? null,
+      JSON.stringify(record.summary),
+      JSON.stringify(record.report),
+      record.expectedContent ? JSON.stringify(record.expectedContent) : null
+    ]
   );
 }
 
+/** Every stored audit record, newest first. */
 export async function listAuditRecords(): Promise<AuditRecord[]> {
-  await ensureHistoryDir();
-  const files = (await readdir(HISTORY_DIR)).filter(f => f.endsWith('.json')).sort().reverse();
-  const records: AuditRecord[] = [];
-  for (const file of files) {
-    try {
-      const raw = await readFile(path.join(HISTORY_DIR, file), 'utf8');
-      const record = JSON.parse(raw) as AuditRecord;
-      records.push(record);
-    } catch {
-      // skip malformed files
-    }
-  }
-  return records;
+  const { rows } = await pool.query<AuditRecordRow>(
+    'SELECT * FROM audit_records ORDER BY created_at DESC'
+  );
+  return rows.map(rowToRecord);
 }
 
 export async function getAuditRecord(id: string): Promise<AuditRecord | null> {
-  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '');
-  const filePath = path.join(HISTORY_DIR, `audit-${safeId}.json`);
-  if (!existsSync(filePath)) return null;
-  try {
-    const raw = await readFile(filePath, 'utf8');
-    return JSON.parse(raw) as AuditRecord;
-  } catch {
-    return null;
-  }
+  const { rows } = await pool.query<AuditRecordRow>(
+    'SELECT * FROM audit_records WHERE id = $1',
+    [id]
+  );
+  return rows[0] ? rowToRecord(rows[0]) : null;
 }

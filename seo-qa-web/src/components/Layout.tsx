@@ -49,7 +49,7 @@ export default function Layout() {
           ))}
         </ul>
         <div style={{ padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,.1)' }}>
-          <span style={{ fontSize: 11, color: 'rgba(255,255,255,.35)' }}>SEO QA v0.1.0</span>
+          <span style={{ fontSize: 11, color: 'rgba(255,255,255,.35)' }}>SEO QA v{__APP_VERSION__}</span>
         </div>
       </nav>
 

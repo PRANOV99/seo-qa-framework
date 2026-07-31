@@ -72,7 +72,8 @@ Copy `.env.example` to `.env` and adjust values for the target site and audit sh
 | `AUDIT_SHEET_PATH` | CSV/XLSX audit sheet path |
 | `REPORT_OUTPUT_DIR` | SEO report output directory |
 | `SCREENSHOT_DIR` | Evidence screenshot directory |
-| `HISTORY_DIR` | Run history snapshot directory |
+| `HISTORY_DIR` | CLI run-history snapshot directory (unrelated to the web API's audit history below) |
+| `DATABASE_URL` | PostgreSQL connection string — required by the **web API** (`api/server.ts`) to persist its audit history (the History page). Not used by the CLI. |
 | `LOG_LEVEL` | Logger verbosity |
 | `CI` | Enables CI-friendly Playwright behavior |
 | `TEST_TIMEOUT_MS` | Playwright test timeout |

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { logger } from '../src/logger/logger.js';
+import { ensureSchema } from './db.js';
 import runsRouter from './routes/runs.js';
 import historyRouter from './routes/history.js';
 import compareRouter from './routes/compare.js';
@@ -48,6 +49,17 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   logger.error('[API Error]', { message: err.message });
   res.status(500).json({ error: err.message ?? 'Internal server error' });
 });
+
+// Fail fast on startup if PostgreSQL (audit history) isn't reachable rather
+// than surfacing a confusing error on the first audit run later.
+try {
+  await ensureSchema();
+} catch (error) {
+  logger.error('[API] Could not initialize PostgreSQL schema — is DATABASE_URL set and reachable?', {
+    message: error instanceof Error ? error.message : String(error)
+  });
+  process.exit(1);
+}
 
 app.listen(PORT, () => {
   logger.info(`SEO QA API listening on port ${PORT}`);

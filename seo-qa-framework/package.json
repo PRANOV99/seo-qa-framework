@@ -1,6 +1,6 @@
 {
   "name": "seo-qa-framework",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Production-ready SEO QA automation framework using Playwright and TypeScript.",
   "private": true,
   "type": "module",
@@ -22,6 +22,7 @@
     "compare": "tsx src/cli/compare.ts",
     "api:start": "node dist/api/server.js",
     "api:dev": "tsx watch api/server.ts",
+    "migrate:history": "tsx api/scripts/migrate-history-to-postgres.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -41,6 +42,7 @@
     "@types/express": "^5.0.6",
     "@types/multer": "^2.1.0",
     "@types/node": "^20.14.0",
+    "@types/pg": "^8.20.0",
     "@types/uuid": "^10.0.0",
     "eslint": "^9.5.0",
     "fflate": "^0.8.3",
@@ -62,6 +64,7 @@
     "lighthouse": "^13.4.0",
     "mammoth": "^1.12.0",
     "multer": "^2.2.0",
+    "pg": "^8.22.0",
     "playwright": "1.61.1",
     "read-excel-file": "^9.2.0",
     "uuid": "^14.0.1",
