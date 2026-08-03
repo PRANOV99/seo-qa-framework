@@ -14,7 +14,7 @@ import { buildReportData } from '../../src/reports/report-data-builder.js';
 import { generateDevBugReport } from '../../src/reports/dev-bug-report-generator.js';
 import type { ReportData } from '../../src/types/report.js';
 import type { BlogContent } from '../../src/types/blog.js';
-import { createAuditSheetParser } from '../../src/parsers/parser-factory.js';
+import { parseAuditSheet } from '../../src/parsers/parser-factory.js';
 import { normalizeUrl } from '../../src/blog/url-normalizer.js';
 import { testConfig } from '../../src/config/test-config.js';
 import { logger } from '../../src/logger/logger.js';
@@ -54,8 +54,24 @@ router.post(
       return;
     }
     try {
-      const parser = createAuditSheetParser(file.path);
-      const result = await parser.parse(file.path);
+      const result = await parseAuditSheet(file.path);
+
+      if (result.mode === 'faq') {
+        const faqGroups = result.faqGroups ?? [];
+        const unresolvedFaqGroups = result.unresolvedFaqGroups ?? [];
+        const urls = faqGroups.map((group) => group.url);
+        const faqCount = faqGroups.reduce((sum, group) => sum + group.faqs.length, 0);
+        res.json({
+          urls,
+          rowCount: faqCount,
+          mode: result.mode,
+          faqPageCount: faqGroups.length,
+          faqCount,
+          unresolvedFaqLabels: unresolvedFaqGroups.map((group) => group.label)
+        });
+        return;
+      }
+
       const urls = [...new Set(result.rows.map(r => r.url).filter(Boolean))].sort();
       res.json({ urls, rowCount: result.rows.length, mode: result.mode });
     } catch (error) {
@@ -387,7 +403,10 @@ router.get('/batch/:id/dev-report', async (req: Request, res: Response) => {
   const slug = `batch-${batch.id}-bug-report`.slice(0, 60);
   res.setHeader('Content-Disposition', `attachment; filename="${slug}.md"`);
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-  res.send(lines.join('\n'));
+  // See the equivalent BOM comment in history.ts's dev-report route — same
+  // non-ASCII-mojibake-on-Windows-tools reasoning applies to this combined
+  // batch report.
+  res.send('﻿' + lines.join('\n'));
 });
 
 /** Demotes every Markdown heading in a single-blog report by two levels (# -> ###, ## -> ####, ...) so it nests correctly under a batch-level "##" section heading. */

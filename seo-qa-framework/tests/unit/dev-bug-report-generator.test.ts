@@ -125,4 +125,30 @@ describe('generateDevBugReport', () => {
 
     assert.match(report, /Missing H1/);
   });
+
+  it('titles a sheet-kind report "SEO Audit Bug Report", not "Blog Content Bug Report"', () => {
+    const reportData = buildReportData(buildSampleAuditRunResult());
+    const report = generateDevBugReport(reportData);
+
+    assert.match(report, /^# SEO Audit Bug Report/);
+    assert.doesNotMatch(report, /Blog Content Bug Report/);
+    assert.doesNotMatch(report, /Blog Testing tool/);
+  });
+
+  it('shows a page count (not a single misleading "Live URL") and annotates each finding with its own page when a sheet run spans multiple URLs and no URL override is given', () => {
+    const reportData = buildReportData(buildSampleAuditRunResult()); // spans example.com/ and example.com/about
+    const report = generateDevBugReport(reportData);
+
+    assert.doesNotMatch(report, /^Live URL:/m, 'A single "Live URL" line would misleadingly imply one page.');
+    assert.match(report, /Pages tested: 2/);
+    assert.match(report, /### Missing H1 — https:\/\/example\.com\/about/);
+  });
+
+  it('still prints a single "Live URL" line with no per-issue URL suffix when an explicit url override is given, even for a multi-page sheet run', () => {
+    const reportData = buildReportData(buildSampleAuditRunResult());
+    const report = generateDevBugReport(reportData, { url: 'https://example.com/about' });
+
+    assert.match(report, /Live URL: https:\/\/example\.com\/about/);
+    assert.doesNotMatch(report, /### Missing H1 — /);
+  });
 });

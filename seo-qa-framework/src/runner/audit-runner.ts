@@ -2,13 +2,14 @@ import type { Browser, BrowserContext, Page } from '@playwright/test';
 import { BrowserManager, type SupportedBrowserName } from '../playwright/browser-manager.js';
 import { PageHelper } from '../playwright/page-helper.js';
 import { ScreenshotHelper } from '../playwright/screenshot-helper.js';
-import { createAuditSheetParser } from '../parsers/parser-factory.js';
+import { parseAuditSheet } from '../parsers/parser-factory.js';
 import { seoChecks } from '../seo-checks/index.js';
 import { RedirectChecker } from '../seo-checks/redirect-check.js';
 import { BrokenLinkChecker } from '../seo-checks/broken-link-check.js';
 import { AccessibilityChecker } from '../seo-checks/accessibility-check.js';
 import { LighthouseChecker } from '../seo-checks/lighthouse-check.js';
-import type { SeoAuditRow } from '../types/audit.js';
+import { FaqChecker } from '../seo-checks/faq-check.js';
+import type { FaqAuditGroup, SeoAuditRow } from '../types/audit.js';
 import type { SeoCheckResult } from '../types/check-result.js';
 import type { RedirectResult } from '../types/redirect-result.js';
 import type { BrokenLinkResult } from '../types/broken-link-result.js';
@@ -18,6 +19,48 @@ import type { AuditRunResult, SkippedAuditRow } from '../types/audit-run-result.
 import { testConfig } from '../config/test-config.js';
 import { logger } from '../logger/logger.js';
 import { buildChecksByType, groupAuditRowsByUrl, resolveCheckDispatch } from './audit-runner-utils.js';
+
+/**
+ * How long to wait for network activity to settle before extracting FAQ
+ * content, capped rather than left uncapped — mirrors the same fix already
+ * applied for the same reason in blog-audit-runner.ts's
+ * waitForBlogPageReady(). An FAQ sheet visits many varied pages (blog posts,
+ * home page, etc.), and an uncapped `networkidle` wait can stall for the
+ * full navigation timeout on pages with continuous background activity
+ * (analytics beacons, chat widgets, ad refreshes) that never truly go idle
+ * — confirmed for real against jrcprojects.com, where two blog pages timed
+ * out after 30s despite their "load" event having already fired. This is
+ * deliberately scoped to the FAQ branch only, not a change to the shared
+ * PageHelper.waitForPageReady(), which the rest of the Website SEO Audit
+ * workflow also depends on.
+ */
+const FAQ_NETWORK_IDLE_TIMEOUT_MS = 4000;
+
+async function waitForFaqPageReady(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle', { timeout: FAQ_NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
+}
+
+/**
+ * Resource types that carry real page weight but contribute nothing to FAQ
+ * text extraction — the check only reads DOM text (question/answer
+ * elements), never rendered pixels, so blocking these cuts per-page load
+ * time substantially. `<img>` tags and their attributes stay in the DOM
+ * either way, only the byte fetch is aborted. Mirrors
+ * blog-audit-runner.ts's blockHeavyResources(); scoped to the FAQ branch
+ * only for the same reason as the wait above — FAQ groups are the only
+ * thing that runs on this shared page after this route handler is
+ * registered, so it can never affect the rest of the sheet workflow.
+ */
+const FAQ_BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font']);
+
+async function blockHeavyResourcesForFaq(page: Page): Promise<void> {
+  await page.route('**/*', (route) => {
+    if (FAQ_BLOCKED_RESOURCE_TYPES.has(route.request().resourceType())) {
+      return route.abort();
+    }
+    return route.continue();
+  });
+}
 
 export interface AuditRunnerOptions {
   /** Overrides testConfig.baseUrl when audit rows contain relative URLs. */
@@ -72,15 +115,16 @@ export class AuditRunner {
 
   async run(auditSheetPath: string): Promise<AuditRunResult> {
     const startedAt = new Date();
-    const parser = createAuditSheetParser(auditSheetPath);
-    const parseResult = await parser.parse(auditSheetPath);
+    const parseResult = await parseAuditSheet(auditSheetPath);
 
     logger.info('Audit sheet parsed.', {
       sourcePath: parseResult.sourcePath,
       mode: parseResult.mode,
       rowCount: parseResult.rows.length,
       detectedColumns: parseResult.detectedColumns,
-      detectedFields: parseResult.detectedFields
+      detectedFields: parseResult.detectedFields,
+      faqGroupCount: parseResult.faqGroups?.length,
+      unresolvedFaqGroupCount: parseResult.unresolvedFaqGroups?.length
     });
 
     const seoCheckResults: SeoCheckResult[] = [];
@@ -118,16 +162,40 @@ export class AuditRunner {
           skipped
         });
       }
+
+      const faqGroups = parseResult.faqGroups ?? [];
+      if (faqGroups.length > 0) {
+        await blockHeavyResourcesForFaq(page);
+      }
+      for (const group of faqGroups) {
+        seoCheckResults.push(...(await this.runFaqGroup(pageHelper, page, group)));
+      }
     } finally {
       await context?.close();
       await browserManager.close();
     }
 
+    for (const unresolved of parseResult.unresolvedFaqGroups ?? []) {
+      const faqCountLabel = `${unresolved.faqCount} FAQ${unresolved.faqCount === 1 ? '' : 's'}`;
+      seoCheckResults.push({
+        url: unresolved.label,
+        checkType: 'FAQ (skipped)',
+        status: 'warning',
+        expected: `${faqCountLabel} for page "${unresolved.label}" — not a live-site bug, nothing to fix on the page itself.`,
+        actual: `Untested — no hyperlink/URL found in the sheet for page label "${unresolved.label}" (row ${unresolved.sourceRowNumber}). ` +
+          'Add a real link in the sheet and re-run to test this page\'s FAQs.',
+        message: `${faqCountLabel} could not be tested.`
+      });
+    }
+
     const finishedAt = new Date();
+    const faqRowCount =
+      (parseResult.faqGroups ?? []).reduce((sum, group) => sum + group.faqs.length, 0) +
+      (parseResult.unresolvedFaqGroups ?? []).reduce((sum, group) => sum + group.faqCount, 0);
 
     return {
       sourcePath: parseResult.sourcePath,
-      totalRows: parseResult.rows.length,
+      totalRows: parseResult.mode === 'faq' ? faqRowCount : parseResult.rows.length,
       seoCheckResults,
       redirectResults,
       brokenLinkResults,
@@ -265,6 +333,42 @@ export class AuditRunner {
       this.options.lighthouseUrls.some(u => u.trim() === url.trim())
     ) {
       lighthouseResults.push(await new LighthouseChecker().check(url));
+    }
+  }
+
+  private async runFaqGroup(pageHelper: PageHelper, page: Page, group: FaqAuditGroup): Promise<SeoCheckResult[]> {
+    const navigationError = await this.navigateForFaq(pageHelper, page, group.url);
+
+    if (navigationError) {
+      // A load/timeout failure, not a live-site content bug — kept out of
+      // 'failed' (Must Fix) so it doesn't inflate the real bug count; the
+      // fix here is to re-run the audit, not to change anything on the page.
+      return [
+        {
+          url: group.url,
+          checkType: 'FAQ (page load failed)',
+          status: 'warning',
+          expected: `This page's FAQs — not a live-site bug, nothing to fix on the page itself.`,
+          actual: `Untested — the page failed to load: ${navigationError} Re-run the audit to test this page's FAQs.`,
+          message: `Unable to load the page to check its FAQs: ${navigationError}`
+        }
+      ];
+    }
+
+    return new FaqChecker().check(page, group);
+  }
+
+  /** FAQ-specific navigation using the bounded networkidle wait (see FAQ_NETWORK_IDLE_TIMEOUT_MS above) instead of the shared, uncapped PageHelper.waitForPageReady(). */
+  private async navigateForFaq(pageHelper: PageHelper, page: Page, url: string): Promise<string | undefined> {
+    try {
+      await pageHelper.goto(url);
+      await page.waitForLoadState('domcontentloaded');
+      await waitForFaqPageReady(page);
+      return undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('Failed to navigate to audited URL for FAQ check.', { url, error: message });
+      return message;
     }
   }
 

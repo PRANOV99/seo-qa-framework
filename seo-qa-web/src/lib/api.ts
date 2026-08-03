@@ -29,6 +29,10 @@ export interface ParseResult {
   urls: string[];
   rowCount: number;
   mode: string;
+  /** Present only when mode === 'faq'. */
+  faqPageCount?: number;
+  faqCount?: number;
+  unresolvedFaqLabels?: string[];
 }
 
 export async function parseSheet(file: File): Promise<ParseResult> {

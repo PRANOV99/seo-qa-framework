@@ -96,6 +96,7 @@ export default function Upload() {
     setParseError('');
     setParsedUrls([]);
     setSelectedUrls(new Set());
+    setFaqInfo(null);
     setError('');
   }
 
@@ -126,6 +127,10 @@ export default function Upload() {
   const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
   const [parseError, setParseError] = useState('');
 
+  // Detected FAQ accordion sheet info (sheet only — set when the uploaded
+  // sheet's header row is auto-detected as an FAQ sheet, see /parse response)
+  const [faqInfo, setFaqInfo] = useState<{ pageCount: number; faqCount: number; unresolvedLabels: string[] } | null>(null);
+
   // Progress
   const [phase, setPhase]   = useState<Phase>('idle');
   const [elapsed, setElapsed] = useState(0);
@@ -153,11 +158,21 @@ export default function Upload() {
     setBlogItems([]);
     setParsedUrls([]);
     setSelectedUrls(new Set());
+    setFaqInfo(null);
     setPhase('parsing');
     try {
       const result = await parseSheet(f);
       setParsedUrls(result.urls);
       setSelectedUrls(new Set(result.urls));
+      setFaqInfo(
+        result.mode === 'faq'
+          ? {
+              pageCount: result.faqPageCount ?? 0,
+              faqCount: result.faqCount ?? 0,
+              unresolvedLabels: result.unresolvedFaqLabels ?? [],
+            }
+          : null
+      );
     } catch (e) {
       setParseError(e instanceof Error ? e.message : 'Could not parse sheet.');
     } finally {
@@ -354,7 +369,19 @@ export default function Upload() {
                   </div>
                 )}
                 {parseError && <div className="alert alert-warning" style={{ marginTop: 10 }}>{parseError}</div>}
-                {auditType === 'sheet' && !parseInFlight && (
+                {auditType === 'sheet' && !parseInFlight && faqInfo && (
+                  <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-muted)' }}>
+                    <FileSpreadsheet size={13} style={{ verticalAlign: 'middle', marginRight: 4, color: 'var(--primary)' }} />
+                    Detected: FAQ Accordion Check — {faqInfo.pageCount} page{faqInfo.pageCount !== 1 ? 's' : ''}, {faqInfo.faqCount} FAQ{faqInfo.faqCount !== 1 ? 's' : ''}
+                    {faqInfo.unresolvedLabels.length > 0 && (
+                      <>
+                        {' '}· {faqInfo.unresolvedLabels.length} page label{faqInfo.unresolvedLabels.length !== 1 ? 's' : ''} skipped — no link found
+                        ({faqInfo.unresolvedLabels.join(', ')})
+                      </>
+                    )}
+                  </div>
+                )}
+                {auditType === 'sheet' && !parseInFlight && !faqInfo && (
                   <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-muted)' }}>
                     <FileSpreadsheet size={13} style={{ verticalAlign: 'middle', marginRight: 4, color: 'var(--primary)' }} /> Recommendation Sheet — {parsedUrls.length} URL{parsedUrls.length !== 1 ? 's' : ''} found
                   </div>

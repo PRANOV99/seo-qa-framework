@@ -1,6 +1,6 @@
 {
   "name": "seo-qa-framework",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Production-ready SEO QA automation framework using Playwright and TypeScript.",
   "private": true,
   "type": "module",
@@ -60,6 +60,7 @@
     "csv-parse": "^5.5.0",
     "csv-stringify": "^6.8.0",
     "dotenv": "^16.4.0",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "lighthouse": "^13.4.0",
     "mammoth": "^1.12.0",

@@ -56,7 +56,14 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
       const markdown = generateDevBugReport(record.report as unknown as ReportData, { url: record.url });
       res.setHeader('Content-Disposition', `attachment; filename="bug-report-${slug}.md"`);
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-      res.send(markdown);
+      // A leading UTF-8 BOM is redundant for browsers/editors that already
+      // trust the charset=utf-8 header above, but several common Windows
+      // tools (Notepad, Excel, some editors opening a downloaded .md with no
+      // other signal) fall back to the system codepage without one — this
+      // report is full of non-ASCII characters (₹, —, …, curly quotes) that
+      // then get mangled into "â€¦"-style mojibake on save/reopen. Cheap and
+      // harmless to always include.
+      res.send('﻿' + markdown);
       return;
     }
 

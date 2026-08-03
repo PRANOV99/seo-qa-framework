@@ -64,6 +64,7 @@ const issuePatterns: Array<{ type: SeoIssueType; patterns: RegExp[] }> = [
     patterns: [/performance/i, /\blighthouse\b/i, /page\s*speed/i, /core\s*web\s*vitals?/i, /\b(lcp|cls|ttfb|fcp|tbt)\b/i]
   },
   { type: 'imageAlt', patterns: [/image\s*alt/i, /\balt\s*text\b/i] },
+  { type: 'faq', patterns: [/\bfaq\b/i, /faqs/i, /accordion/i] },
   { type: 'structuredData', patterns: [/structured\s*data/i, /schema/i, /json-ld/i] },
   { type: 'openGraph', patterns: [/open\s*graph/i, /\bog:/i] },
   { type: 'twitterCard', patterns: [/twitter\s*card/i, /twitter:/i] },
