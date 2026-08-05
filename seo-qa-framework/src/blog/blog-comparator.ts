@@ -38,6 +38,13 @@ export function compareBlogContent(
     // H1 is skipped ONLY when expected.title is absent — never when it has a value.
     compareSingleValue(url, 'Blog Title (H1)',   expected.title,           actual.title,
       'H1 is missing from the live page.'),
+    // Structural check, independent of the text-based one above — a live
+    // page can have the right H1 text (compareSingleValue only ever reads
+    // the FIRST <h1>) while still shipping a second, duplicate <h1> the docx
+    // has no way to express. Confirmed against a real site where the CMS
+    // re-rendered the blog title as a second literal <h1> at the top of the
+    // article body.
+    compareH1Count(url, actual.h1Count),
 
     // ── URL-level checks ─────────────────────────────────────────────────────
     compareCanonicalUrl(url, expected.expectedCanonicalUrl, actual.canonicalUrl),
@@ -139,6 +146,43 @@ function hasSiteNameSuffix(expectedKey: string, actualKey: string): boolean {
     const prefix = expectedKey + separator;
     return actualKey.startsWith(prefix) && actualKey.length > prefix.length;
   });
+}
+
+// ── H1 count comparison ────────────────────────────────────────────────────────
+
+/**
+ * A page should have exactly one `<h1>`. This is checked independently of
+ * `Blog Title (H1)` (which only ever compares the FIRST `<h1>`'s text)
+ * because a duplicate H1 with the identical, correct text would otherwise
+ * pass that check while still being a genuine on-page SEO defect — two
+ * elements both claiming to be the page's single primary heading.
+ *
+ * Zero H1s is left to `Blog Title (H1)` to report (as "missing") rather than
+ * duplicated here.
+ */
+function compareH1Count(url: string, actualCount: number | undefined): SeoCheckResult {
+  const checkType = 'H1 Tag Count';
+
+  if (actualCount === undefined || actualCount === 0) {
+    return {
+      url, checkType, status: 'skipped', expected: '1', actual: actualCount === undefined ? undefined : '0',
+      message: 'No H1 tag was found on the live page; see "Blog Title (H1)".'
+    };
+  }
+
+  if (actualCount === 1) {
+    return {
+      url, checkType, status: 'passed', expected: '1', actual: '1',
+      message: 'Exactly one H1 tag is present on the live page.'
+    };
+  }
+
+  return {
+    url, checkType, status: 'failed', expected: '1', actual: String(actualCount),
+    message: `Found ${actualCount} <h1> tags on the live page, but a page should have exactly one. ` +
+             'Multiple H1 tags dilute the semantic "primary heading" signal search engines use and often ' +
+             'indicate the CMS is re-rendering the blog title as a second literal heading inside the body content.'
+  };
 }
 
 // ── Canonical URL comparison ───────────────────────────────────────────────────

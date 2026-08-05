@@ -46,6 +46,19 @@ export interface BlogContent {
    */
   canonicalUrl?: string;
   /**
+   * Total number of `<h1>` elements found anywhere on the live page
+   * (document-wide, not scoped to the content container — a duplicate H1
+   * injected by the CMS template outside the article, or a second one
+   * inside it, both count). Only populated by the live-page extractor; a
+   * .docx has no notion of "how many H1 tags" since it isn't rendered HTML.
+   * Confirmed against a real site where the CMS re-rendered the blog title
+   * as a second literal `<h1>` at the top of the article body, in addition
+   * to the page-header `<h1>` — `title` above only ever captures the first
+   * match, so this field is what lets `compareBlogContent` flag the
+   * duplicate instead of silently passing.
+   */
+  h1Count?: number;
+  /**
    * Optional canonical URL override from a "Canonical: …" labeled line in
    * the approved document. When absent, the canonical check falls back to
    * expecting the live page to self-reference the audited URL. Only

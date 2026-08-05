@@ -42,10 +42,12 @@ const baseExpected: BlogContent = {
 
 function exactMatch(content: BlogContent): BlogContent {
   const clone = JSON.parse(JSON.stringify(content)) as BlogContent;
-  // Live-page-only field: default every "actual" fixture to a self-referencing
-  // canonical so tests that assert "everything passes" remain accurate without
-  // having to repeat this on every call site.
+  // Live-page-only fields: default every "actual" fixture to a
+  // self-referencing canonical and a single H1 so tests that assert
+  // "everything passes" remain accurate without having to repeat this on
+  // every call site.
   clone.canonicalUrl = clone.canonicalUrl ?? normalizeUrl(BASE_URL, BASE_URL);
+  clone.h1Count = clone.h1Count ?? 1;
   return clone;
 }
 
@@ -89,6 +91,44 @@ describe('compareBlogContent — metadata', () => {
 
     assert.equal(h1Result?.status, 'failed');
     assert.match(h1Result?.message ?? '', /missing/);
+  });
+
+  it('FAILS H1 Tag Count when the live page has a duplicate <h1> even though its text matches', () => {
+    // Reproduces the reported bug verbatim: a CMS re-rendering the blog
+    // title as a second literal <h1> at the top of the article body, in
+    // addition to the correct page-header <h1> — same text both times, so
+    // "Blog Title (H1)" alone (which only ever reads the FIRST <h1>) passes
+    // and the duplicate would otherwise go unreported.
+    const actual = exactMatch(baseExpected);
+    actual.h1Count = 2;
+
+    const results   = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const h1Title   = results.find((r) => r.checkType === 'Blog Title (H1)');
+    const h1Count   = results.find((r) => r.checkType === 'H1 Tag Count');
+
+    assert.equal(h1Title?.status, 'passed', 'Blog Title (H1) text still matches, so it should pass.');
+    assert.equal(h1Count?.status, 'failed');
+    assert.match(h1Count?.message ?? '', /2.*<h1>/);
+  });
+
+  it('PASSES H1 Tag Count when the live page has exactly one <h1>', () => {
+    const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, exactMatch(baseExpected));
+    const h1Count = results.find((r) => r.checkType === 'H1 Tag Count');
+
+    assert.equal(h1Count?.status, 'passed');
+  });
+
+  it('SKIPS H1 Tag Count rather than reporting a duplicate when the live page has zero H1s', () => {
+    // Zero H1s is Blog Title (H1)'s job to report as "missing" — H1 Tag
+    // Count only judges duplicates among H1s that do exist.
+    const actual = exactMatch(baseExpected);
+    actual.title = undefined;
+    actual.h1Count = 0;
+
+    const results = compareBlogContent('https://example.com/blog/sourdough', baseExpected, actual);
+    const h1Count = results.find((r) => r.checkType === 'H1 Tag Count');
+
+    assert.equal(h1Count?.status, 'skipped');
   });
 
   it('does NOT skip Blog Title (H1) when the approved document has a title', () => {

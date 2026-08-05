@@ -44,10 +44,14 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
   // latency sequentially. Only the H1 fallback (below) has to wait on its
   // own scoped query first, since it only fires when that comes back empty.
   const [
-    scopedTitle, h2Headings, h3Headings, h4Headings, paragraphs,
+    scopedTitle, h1Count, h2Headings, h3Headings, h4Headings, paragraphs,
     metaTitle, metaDescription, canonicalHref, links, boldPhrases
   ] = await Promise.all([
     extractText(page, `${scope} h1`),
+    // Document-wide, not scoped — a duplicate H1 is an SEO defect regardless
+    // of whether it sits inside or outside the content container. See the
+    // `h1Count` doc comment on BlogContent.
+    page.locator('h1').count(),
     extractAllText(page, `${scope} h2, ${scope} [role="heading"][aria-level="2"]`),
     extractAllText(page, `${scope} h3, ${scope} [role="heading"][aria-level="3"]`),
     // Accordion/FAQ widgets (a common WordPress/page-builder pattern) often
@@ -76,7 +80,8 @@ export async function extractLiveBlogContent(page: Page): Promise<BlogContent> {
     metaDescription: normalizeText(metaDescription ?? undefined) || undefined,
     links,
     boldPhrases,
-    canonicalUrl:    canonicalHref ? new URL(canonicalHref, pageUrl).toString() : undefined
+    canonicalUrl:    canonicalHref ? new URL(canonicalHref, pageUrl).toString() : undefined,
+    h1Count
   };
 }
 

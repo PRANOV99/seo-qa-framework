@@ -24,6 +24,7 @@ test.describe('BlogAuditRunner', () => {
   let listLayoutPath: string;
   let mixedBlocksPath: string;
   let splitTextNodesPath: string;
+  let duplicateH1Path: string;
 
   test.beforeAll(async () => {
     server = createServer((req, res) => {
@@ -178,6 +179,34 @@ test.describe('BlogAuditRunner', () => {
         return;
       }
 
+      if (req.url === '/blog/duplicate-h1') {
+        // Reproduces the reported bug verbatim: a real Next.js/CMS blog page
+        // where the styled page-header <h1> is followed by the article's
+        // rich-text body re-rendering the SAME title as a second, literal
+        // <h1 id="h-..."> at the very top of the prose content — before the
+        // genuine section heading, which stays a normal <h2>.
+        res.end(`<!doctype html>
+          <html>
+            <head>
+              <title>Duplicate H1 | Example Blog</title>
+              <meta name="description" content="A page whose CMS re-renders the title as a second literal H1.">
+              <link rel="canonical" href="${baseUrl}/blog/duplicate-h1">
+            </head>
+            <body>
+              <article>
+                <h1>Duplicate H1</h1>
+                <div class="prose">
+                  <h1 id="h-duplicate-h1">Duplicate H1</h1>
+                  <p>This is the introduction paragraph.</p>
+                  <h2>Ingredients</h2>
+                  <p>Flour, water, salt, and a starter.</p>
+                </div>
+              </article>
+            </body>
+          </html>`);
+        return;
+      }
+
       // Mismatched page: different title, missing H2, and a modified paragraph.
       res.end(`<!doctype html>
         <html>
@@ -204,6 +233,7 @@ test.describe('BlogAuditRunner', () => {
     listLayoutPath = `${baseUrl}/blog/list-layout`;
     mixedBlocksPath = `${baseUrl}/blog/mixed-blocks`;
     splitTextNodesPath = `${baseUrl}/blog/split-text-nodes`;
+    duplicateH1Path = `${baseUrl}/blog/duplicate-h1`;
   });
 
   test.afterAll(async () => {
@@ -232,6 +262,31 @@ test.describe('BlogAuditRunner', () => {
       // re-runs) so it can be persisted and reused later without a fresh
       // upload — see the "re-run" test below.
       expect(result.expected?.title).toBe('How to Bake Sourdough Bread');
+    } finally {
+      await rm(path.dirname(docxPath), { recursive: true, force: true });
+    }
+  });
+
+  test('FAILS H1 Tag Count (but still PASSES Blog Title (H1)) when the CMS re-renders the title as a second literal <h1>', async () => {
+    const docxPath = await writeBlogDocx('duplicate-h1.docx', [
+      paragraph('Meta Title: Duplicate H1 | Example Blog'),
+      paragraph('Meta Description: A page whose CMS re-renders the title as a second literal H1.'),
+      heading(1, 'Duplicate H1'),
+      paragraph('This is the introduction paragraph.'),
+      heading(2, 'Ingredients'),
+      paragraph('Flour, water, salt, and a starter.')
+    ]);
+
+    try {
+      const runner = new BlogAuditRunner();
+      const result = await runner.run(docxPath, duplicateH1Path);
+
+      const h1Title = result.seoCheckResults.find((check) => check.checkType === 'Blog Title (H1)');
+      const h1Count = result.seoCheckResults.find((check) => check.checkType === 'H1 Tag Count');
+
+      expect(h1Title?.status).toBe('passed');
+      expect(h1Count?.status).toBe('failed');
+      expect(h1Count?.message).toContain('2');
     } finally {
       await rm(path.dirname(docxPath), { recursive: true, force: true });
     }
