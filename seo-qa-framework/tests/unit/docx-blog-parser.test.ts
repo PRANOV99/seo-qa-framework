@@ -524,6 +524,76 @@ describe('parseBlogDocx — bold phrase extraction', () => {
   });
 });
 
+describe('parseBlogDocx — title fallback when the real title is styled as a lower heading level', () => {
+  it('uses the first block\'s Heading-3 text as the title when there is no H1 and no "Title:" label, stripping it from h3Headings', async () => {
+    // Reproduces a real content-brief doc exactly: the actual blog title
+    // ("How Robotics and AI...") was styled Heading 3 instead of Heading 1,
+    // with no "Title:"/"H1:" label anywhere — only a "Meta Title:" line
+    // (a different field entirely) directly below it.
+    const docxPath = await writeBlogDocx('title-styled-as-h3.docx', [
+      heading(3, 'How Robotics and AI Build Teamwork, Creativity, and Leadership in Children'),
+      paragraph('Meta Title: Robotics & AI for Children | Teamwork and Creativity'),
+      paragraph('Meta Description: Learn how robotics and AI build teamwork.'),
+      heading(3, 'Why Are AI and Robotics Important in School Education?'),
+      paragraph('This is a real body paragraph about robotics and AI.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.title, 'How Robotics and AI Build Teamwork, Creativity, and Leadership in Children');
+    assert.equal(content.metaTitle, 'Robotics & AI for Children | Teamwork and Creativity');
+    assert.deepEqual(content.h3Headings, ['Why Are AI and Robotics Important in School Education?'],
+      'The promoted title heading must not also remain in h3Headings as a separate, now-unfindable check.');
+  });
+
+  it('still recognizes a "Meta Title:" label even with a stray zero-width space right before it', async () => {
+    // Reproduces the exact real-world byte sequence found in a real docx:
+    // a zero-width space (U+200B) sitting immediately before "Meta Title"
+    // (and before its value) defeated the label-matching regex entirely,
+    // since it's anchored with `^\s*` and \s does not match U+200B — the
+    // whole line fell through as a bogus body paragraph instead of
+    // populating metaTitle.
+    const docxPath = await writeBlogDocx('zero-width-before-label.docx', [
+      heading(1, 'A Perfectly Normal Title'),
+      paragraph('​Meta Title: ​The Real Meta Title Value'),
+      paragraph('A real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.metaTitle, 'The Real Meta Title Value');
+    assert.deepEqual(content.paragraphs, ['A real body paragraph.'],
+      'The zero-width-prefixed label line must not leak into paragraphs[] as a bogus body paragraph.');
+  });
+
+  it('does NOT promote a heading-only document (no real paragraphs anywhere) — nothing to plausibly be titling', async () => {
+    const docxPath = await writeBlogDocx('heading-only-no-paragraphs.docx', [
+      heading(2, 'Just A Heading, Nothing Else')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    assert.equal(content.title, undefined);
+    assert.deepEqual(content.h2Headings, ['Just A Heading, Nothing Else']);
+  });
+
+  it('does NOT promote a heading that is not the document\'s first block, even with no H1 present', async () => {
+    const docxPath = await writeBlogDocx('non-first-block-heading.docx', [
+      paragraph('An introductory paragraph before any heading at all.'),
+      heading(2, 'A Genuine Section Heading'),
+      paragraph('The real body paragraph.')
+    ]);
+
+    const content = await parseBlogDocx(docxPath);
+
+    // With no H1 and the first heading not at block 0, this new fallback
+    // must not fire — the pre-existing "first paragraph" last-resort
+    // fallback claims the title instead, exactly as it always did.
+    assert.equal(content.title, 'An introductory paragraph before any heading at all.');
+    assert.deepEqual(content.h2Headings, ['A Genuine Section Heading']);
+  });
+});
+
 describe('parseBlogDocx — heading text extraction with inline formatting', () => {
   it('extracts an H2 whose text is split across bold, italic, and hyperlink runs into one clean heading', async () => {
     const docxPath = await writeBlogDocxHeadingWithRuns('heading-mixed-runs.docx', 2, [

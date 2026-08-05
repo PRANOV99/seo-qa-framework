@@ -167,6 +167,24 @@ interface HeadingState {
   h2Headings: string[];
   h3Headings: string[];
   h4Headings: string[];
+  /**
+   * The document's very first block, when it's a genuine Word Heading 2/3/4
+   * style — a last-resort title candidate for documents whose actual blog
+   * title was styled Heading 2/3/4 instead of Heading 1 (confirmed against
+   * real content-brief docs: the title text sits in an <h3> as the literal
+   * first thing in the document, with no "Title:"/"H1:" label anywhere).
+   * Deliberately restricted to block index 0 — a genuine, incidental H2/H3
+   * section heading elsewhere in an otherwise normal document (no real H1,
+   * but real section structure) must NOT be mistaken for the title just
+   * because there's no H1; only a heading claiming the very first position
+   * in the document carries that signal. Only ever consumed as a fallback
+   * when there's no real H1, no h1-labeled line, AND the document has real
+   * paragraph content elsewhere (see the assembly code below) — removed
+   * from its own level's array at that point so the same text isn't
+   * independently checked twice (once as the title, once as a numbered
+   * heading it no longer is on the live page).
+   */
+  firstBlockHeading?: { level: 2 | 3 | 4; text: string };
 }
 
 function pushHeading(state: HeadingState, level: 1 | 2 | 3 | 4, text: string): void {
@@ -277,7 +295,12 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
       const cleanText = stripHeadingSuffix(joined);
       if (!cleanText) continue;
 
-      pushHeading(headings, suffixLevel ?? impliedLevel, cleanText);
+      const resolvedLevel = suffixLevel ?? impliedLevel;
+      if (blockIndex === 0 && resolvedLevel !== 1) {
+        headings.firstBlockHeading = { level: resolvedLevel, text: cleanText };
+      }
+
+      pushHeading(headings, resolvedLevel, cleanText);
       pushLinksAndBold(block.innerHtml);
       continue;
     }
@@ -371,9 +394,29 @@ export async function parseBlogDocx(filePath: string, pageUrl = ''): Promise<Blo
   // fallback title source when the document has no real H1 heading at all.
   let title = fields.h1 || headings.title || undefined;
 
+  // Next fallback: the document's actual title was styled Heading 2/3/4
+  // instead of Heading 1 (a real recurring pattern — confirmed against
+  // real content-brief docs with no "Title:"/"H1:" label at all, just the
+  // title text itself sitting in an <h3> as literally the first thing in
+  // the document). Requiring both the block-0 position AND real paragraph
+  // content elsewhere is deliberate: a heading-only fixture with nothing
+  // else in the document (no paragraphs at all) is a normal section
+  // heading with no title to infer, not a mis-styled title — only claim it
+  // when there's an actual body of content it could plausibly be titling.
+  // Removed from its own array so it isn't ALSO independently checked as
+  // e.g. "H3 #1" — on the live page it renders as the real page title, not
+  // as a numbered sub-heading, so that check would always false-fail.
+  if (!title && headings.firstBlockHeading && paragraphs.length > 0) {
+    const { level, text } = headings.firstBlockHeading;
+    title = text;
+    const siblings = level === 2 ? headings.h2Headings : level === 3 ? headings.h3Headings : headings.h4Headings;
+    const index = siblings.indexOf(text);
+    if (index !== -1) siblings.splice(index, 1);
+  }
+
   // Last-resort fallback: some content briefs just type the blog title as
   // the very first line, with no "Title:"/"H1:" label and no real Word
-  // Heading-1 style at all — trusting a reader to infer it's the title from
+  // heading style at all — trusting a reader to infer it's the title from
   // its position alone. Only used when nothing else already established a
   // title. The line is claimed as the title (not left in paragraphs[]),
   // since it renders as a heading on the live page, not a body paragraph —
@@ -499,8 +542,9 @@ function extractBoldFromHtml(innerHtml: string): string[] {
 /**
  * Converts a fragment of HTML into its rendered plain-text content: every
  * tag (however deeply nested — `<span>`, `<strong>`, `<b>`, `<em>`, `<i>`,
- * `<a>`, …) is stripped, HTML entities are decoded, and whitespace is
- * normalized. Exported for direct unit testing of entity/tag handling.
+ * `<a>`, …) is stripped, HTML entities are decoded, whitespace is
+ * normalized, and invisible/zero-width characters (see INVISIBLE_CHARS)
+ * are removed. Exported for direct unit testing of entity/tag handling.
  *
  * Formatting tags are zero-width wrappers around text that already contains
  * whatever real spaces the source document had, so they're stripped to
@@ -509,13 +553,25 @@ function extractBoldFromHtml(innerHtml: string): string[] {
  * "Infra's") would gain a phantom space at the tag boundary ("Infra 's").
  * `<br>` is the one exception: it is a genuine line-break/word-separator, so
  * it's turned into a space rather than dropped.
+ *
+ * Stripping invisible characters here (not just in isDividerOnly) matters
+ * because they otherwise survive into the plain text mammoth hands back
+ * from real content-brief docs — confirmed directly against a real file
+ * where a stray zero-width space (U+200B) sat right before a "Meta Title:"
+ * label. Every downstream label-matching regex is anchored with `^\s*`,
+ * which does NOT match U+200B, so the label went unrecognized entirely:
+ * it fell through as a bogus body paragraph (later mis-claimed as the blog
+ * title by the last-resort fallback below) instead of populating
+ * metaTitle. Stripping it at the source fixes every consumer at once —
+ * label matching, divider detection, and stored paragraph/heading text
+ * alike — rather than special-casing each one individually.
  */
 export function htmlToText(html: string): string {
   return normalizeText(decodeHtmlEntities(
     html
       .replace(/<br\s*\/?>/gi, ' ')
       .replace(/<[^>]+>/g, '')
-  ));
+  )).replace(INVISIBLE_CHARS, '');
 }
 
 /**

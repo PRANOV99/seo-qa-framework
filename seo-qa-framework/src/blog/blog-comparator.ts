@@ -44,11 +44,17 @@ export function compareBlogContent(
     compareSlug(url, expected.expectedSlug),
 
     // ── Headings ─────────────────────────────────────────────────────────────
-    ...compareHeadingList(url, 'H2', expected.h2Headings, actual.h2Headings),
-    ...compareHeadingList(url, 'H3', expected.h3Headings, actual.h3Headings),
+    // actualHeadingTexts(actual)/actual.boldPhrases are passed to every level
+    // so a heading published at the WRONG level (e.g. authored as H3 in the
+    // docx but rendered <h2> on the live page — confirmed against a real
+    // site) or rendered as bold-styled text rather than a literal heading
+    // tag is recognized as present, not reported as missing. See the
+    // cross-level/bold fallback tiers inside compareHeadingList.
+    ...compareHeadingList(url, 'H2', expected.h2Headings, actual.h2Headings, actualHeadingTexts(actual), actual.boldPhrases),
+    ...compareHeadingList(url, 'H3', expected.h3Headings, actual.h3Headings, actualHeadingTexts(actual), actual.boldPhrases),
     // H4 is most commonly FAQ questions ("Question text (H4)" in a content
     // brief, or a real <h4> on the live page) — compared the same way as H2/H3.
-    ...compareHeadingList(url, 'H4', expected.h4Headings, actual.h4Headings),
+    ...compareHeadingList(url, 'H4', expected.h4Headings, actual.h4Headings, actualHeadingTexts(actual), actual.boldPhrases),
 
     // ── Body paragraphs ──────────────────────────────────────────────────────
     ...compareParagraphs(url, expected.paragraphs, actual.paragraphs),
@@ -248,12 +254,22 @@ function normalizeSlugSegment(value: string): string {
  * outside that maximal in-order match is reported as present-but-out-of-order
  * — as a WARNING, not a FAIL, since the content itself is genuinely there;
  * only a heading that truly cannot be found anywhere is a FAIL.
+ *
+ * A heading not found at its own expected level is also checked against
+ * every OTHER heading level on the live page, then against literal
+ * bold-styled (<strong>/<b>) text — confirmed against a real site where a
+ * docx-authored H3 was published as a real H2, which the H3-specific check
+ * alone would always report as missing even though the content is right
+ * there. Both are WARNINGs, not FAILs, for the same reason as the other
+ * tiers: the content genuinely exists, just not tagged exactly as expected.
  */
 function compareHeadingList(
   url: string,
   label: string,
   expected: string[],
-  actual: string[]
+  actual: string[],
+  actualAllHeadings: string[],
+  actualBoldPhrases: string[]
 ): SeoCheckResult[] {
   const headingKey = (value: string) => stripEdgePunctuation(normalizeQuotes(normalizeForComparison(value)));
   // Case-preserving, quote/edge-punctuation-normalized text used only for the
@@ -263,6 +279,15 @@ function compareHeadingList(
   const expectedKeys = expected.map(headingKey);
   const actualKeys = actual.map(headingKey);
   const orderedMatch = computeLcsAlignment(expectedKeys, actualKeys, (x, y) => x === y);
+
+  // Cross-level/bold fallback sets — confirmed against a real site where a
+  // docx-authored H3 published as a real <h2> on the live page (and,
+  // separately, the same pattern for plain <strong>/<b> text instead of any
+  // heading tag at all). Neither means the expected level's own list; both
+  // mean "the content is genuinely there, just not tagged the way the docx
+  // expected" — a WARNING, not a FAIL.
+  const normalizedAllHeadingsSet = new Set(actualAllHeadings.map(headingKey));
+  const normalizedBoldSet = new Set(actualBoldPhrases.map(headingKey));
 
   return expected.map((expectedHeading, index) => {
     const checkType  = `${label} #${index + 1}`;
@@ -303,6 +328,30 @@ function compareHeadingList(
         expected: expectedHeading, actual: actual[containedIndex],
         message: `${label} heading "${expectedHeading}" was found on the live page wrapped in ` +
                  `additional markup (e.g. an accordion/FAQ widget) — found "${actual[containedIndex]}".`
+      } satisfies SeoCheckResult;
+    }
+
+    // Not found at this level, verbatim or decorated — but present verbatim
+    // as a heading at a DIFFERENT level on the live page (e.g. authored H3
+    // in the docx, published as a real H2). The content is genuinely there.
+    if (normalizedAllHeadingsSet.has(normExpect)) {
+      return {
+        url, checkType, status: 'warning',
+        expected: expectedHeading, actual: expectedHeading,
+        message: `${label} heading "${expectedHeading}" was not found as an ${label} tag specifically, ` +
+                 'but is present as a heading at a different level on the live page.'
+      } satisfies SeoCheckResult;
+    }
+
+    // Not a heading tag at any level either — but present verbatim as
+    // bold-styled text (a literal <strong>/<b>) on the live page. Still
+    // genuinely there, just not tagged as a heading at all.
+    if (normalizedBoldSet.has(normExpect)) {
+      return {
+        url, checkType, status: 'warning',
+        expected: expectedHeading, actual: expectedHeading,
+        message: `${label} heading "${expectedHeading}" was not found as a heading tag on the live page, ` +
+                 'but is present as bold-styled text.'
       } satisfies SeoCheckResult;
     }
 

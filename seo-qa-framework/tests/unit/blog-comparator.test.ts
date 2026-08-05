@@ -362,6 +362,36 @@ describe('compareBlogContent — headings', () => {
     assert.match(missing?.message ?? '', /missing from the live page/);
   });
 
+  it('does NOT report Missing for an H3 published as a different heading level on the live page — reports a WARNING instead', () => {
+    // Regression: a real content-brief docx styled its own blog title as
+    // Heading 3, and the live CMS published that exact text as a real H2 —
+    // the H3-specific check alone always reported it "missing" even though
+    // the content was genuinely there, just at a different level.
+    const expected: BlogContent = { ...baseExpected, h3Headings: ['Why Are AI and Robotics Important?'] };
+    const actual = exactMatch(expected);
+    actual.h3Headings = []; // not published as an H3 at all
+    actual.h2Headings = ['Why Are AI and Robotics Important?', ...actual.h2Headings]; // published as H2 instead
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h3 = results.find((r) => r.checkType === 'H3 #1');
+
+    assert.equal(h3?.status, 'warning', `Got: ${JSON.stringify(h3)}`);
+    assert.match(h3?.message ?? '', /different level/);
+  });
+
+  it('does NOT report Missing for an H3 rendered as bold-styled text rather than any heading tag — reports a WARNING instead', () => {
+    const expected: BlogContent = { ...baseExpected, h3Headings: ['Skills That Last a Lifetime'] };
+    const actual = exactMatch(expected);
+    actual.h3Headings = [];
+    actual.boldPhrases = [...actual.boldPhrases, 'Skills That Last a Lifetime'];
+
+    const results = compareBlogContent(BASE_URL, expected, actual);
+    const h3 = results.find((r) => r.checkType === 'H3 #1');
+
+    assert.equal(h3?.status, 'warning', `Got: ${JSON.stringify(h3)}`);
+    assert.match(h3?.message ?? '', /bold-styled text/);
+  });
+
   it('detects an H2 heading that is out of order — as a WARNING, since the heading genuinely exists', () => {
     const actual = exactMatch(baseExpected);
     actual.h2Headings = ['Ingredients', 'Tips for Success', 'Method']; // Method/Tips swapped
