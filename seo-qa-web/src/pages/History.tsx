@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Search, CheckCircle, XCircle, Clock, Download, GitCompare, RotateCw } from 'lucide-react';
-import { getHistory, downloadUrl, postRerunBatch, type AuditRecord } from '../lib/api';
+import { getHistory, downloadUrl, postRerunBatch, postRerunSheet, type AuditRecord } from '../lib/api';
 
 function timeAgo(iso: string): string {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -11,7 +11,13 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+/** Single-row re-run eligibility — both audit types, each via its own endpoint (see runRerun/runSheetRerun). */
 function canRerun(r: AuditRecord): boolean {
+  return (r.type === 'blog' || r.type === 'sheet') && r.status === 'completed' && Boolean(r.hasExpectedContent);
+}
+
+/** Multi-select "Re-run (N)" batch banner — blog-only, since that's the only workflow with a batch/polling pipeline behind it. A sheet re-run always runs one at a time via its own per-row button. */
+function canBatchRerun(r: AuditRecord): boolean {
   return r.type === 'blog' && r.status === 'completed' && Boolean(r.hasExpectedContent);
 }
 
@@ -47,7 +53,7 @@ export default function History() {
 
   const recordsById = useMemo(() => new Map(records.map(r => [r.id, r])), [records]);
   const rerunEligibleSelected = useMemo(
-    () => selected.filter(id => { const r = recordsById.get(id); return r && canRerun(r); }),
+    () => selected.filter(id => { const r = recordsById.get(id); return r && canBatchRerun(r); }),
     [selected, recordsById]
   );
 
@@ -64,6 +70,21 @@ export default function History() {
       const { batchId, skipped } = await postRerunBatch(auditIds);
       if (skipped.length > 0) setRerunSkipped(skipped);
       navigate(`/results/batch/${batchId}`);
+    } catch (err) {
+      setRerunError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRerunSubmitting(false);
+    }
+  }
+
+  /** Sheet re-run runs synchronously (one shot, no batch/polling) — see postRerunSheet. */
+  async function runSheetRerun(auditId: string) {
+    setRerunSubmitting(true);
+    setRerunError(null);
+    setRerunSkipped(null);
+    try {
+      const result = await postRerunSheet(auditId);
+      navigate(`/results/${result.id}`);
     } catch (err) {
       setRerunError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -195,7 +216,7 @@ export default function History() {
                       <td>
                         <div style={{ fontWeight: 500, fontSize: 13 }}>{r.filename}</div>
                         {r.url && <div className="text-xs text-muted" style={{ marginTop: 2, wordBreak: 'break-all', maxWidth: 260 }}>{r.url}</div>}
-                        {r.type === 'blog' && r.status === 'completed' && !eligibleForRerun && (
+                        {(r.type === 'blog' || r.type === 'sheet') && r.status === 'completed' && !eligibleForRerun && (
                           <div className="text-xs text-muted" style={{ marginTop: 2, fontStyle: 'italic' }}>
                             Can't re-run — tested before this feature was added
                           </div>
@@ -227,9 +248,9 @@ export default function History() {
                           {eligibleForRerun && (
                             <button
                               className="btn btn-ghost btn-sm"
-                              title="Re-run this blog now"
+                              title={r.type === 'blog' ? 'Re-run this blog now' : 'Re-run this sheet now'}
                               disabled={rerunSubmitting}
-                              onClick={() => void runRerun([r.id])}
+                              onClick={() => void (r.type === 'blog' ? runRerun([r.id]) : runSheetRerun(r.id))}
                             >
                               <RotateCw size={13} />
                             </button>

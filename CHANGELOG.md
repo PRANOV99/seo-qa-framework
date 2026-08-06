@@ -6,6 +6,24 @@ kept in lockstep across `seo-qa-framework/package.json` and
 `seo-qa-web/package.json`: MAJOR = breaking change, MINOR = new feature,
 PATCH = bug fix.
 
+## [0.5.0] - 2026-08-06
+
+### Added
+- **Re-run for sheet (.xlsx/.csv) audits — parity with Blog Testing's
+  re-run.** Sheet audits now persist their parsed content
+  (`AuditParseResult`) on the history record, same as blogs already do with
+  `BlogContent`. `AuditRunner.run()` accepts either a file path or that
+  already-parsed content (mirroring `BlogAuditRunner.run`'s
+  `string | BlogContent` parameter). New `POST /api/runs/rerun-sheet`
+  re-tests a sheet's URLs against a fresh crawl without re-uploading the
+  file — runs synchronously (a sheet audit is already one shot over many
+  URLs, unlike blog's per-item batch pipeline) and returns the same shape
+  as a normal run. History and Results pages both got a "Re-run" action for
+  sheets; only single re-run is supported (no multi-select batch — that
+  path stays blog-only, tied to the batch/polling pipeline). Older sheet
+  audits predating this change can't be re-run without a fresh upload, same
+  as blogs predating the original re-run feature.
+
 ## [0.4.1] - 2026-08-06
 
 ### Fixed

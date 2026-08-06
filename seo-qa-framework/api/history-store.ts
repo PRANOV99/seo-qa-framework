@@ -11,11 +11,12 @@ export interface AuditRecord {
   summary: Record<string, unknown>;
   report: Record<string, unknown>;
   /**
-   * The approved blog content parsed from the .docx (BlogContent, stored
-   * loosely like `summary`/`report`) — only present for completed blog
-   * runs. Lets the SAME blog be re-tested later against a fresh crawl of
-   * the live page without re-uploading the document (see POST
-   * /api/runs/rerun).
+   * The approved/parsed input content this audit was run against — a
+   * BlogContent for blog runs, or an AuditParseResult for sheet runs (both
+   * stored loosely like `summary`/`report`). Only present for completed
+   * runs. Lets the SAME blog or sheet be re-tested later against a fresh
+   * crawl without re-uploading the original file (see POST
+   * /api/runs/rerun and POST /api/runs/rerun-sheet).
    */
   expectedContent?: Record<string, unknown>;
 }

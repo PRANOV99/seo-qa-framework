@@ -210,6 +210,20 @@ export async function postRerunBatch(auditIds: string[]): Promise<{ batchId: str
   });
 }
 
+/**
+ * Re-runs one previously-tested sheet (.xlsx/.csv) audit against a fresh
+ * crawl of its URLs — no re-upload needed, reuses its saved parsed content.
+ * Runs synchronously and returns a normal RunResult (same as postRun), since
+ * a sheet audit is one shot over many URLs rather than a batch of items —
+ * unlike postRerunBatch (blog-only), there's no batch/polling step here.
+ */
+export async function postRerunSheet(auditId: string): Promise<RunResult> {
+  return request<RunResult>('/runs/rerun-sheet', {
+    method: 'POST',
+    body: JSON.stringify({ auditId })
+  });
+}
+
 export function combinedBatchDownloadUrl(batchId: string): string {
   return `${API_BASE}/runs/batch/${encodeURIComponent(batchId)}/download`;
 }

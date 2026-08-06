@@ -9,7 +9,7 @@ import { BrokenLinkChecker } from '../seo-checks/broken-link-check.js';
 import { AccessibilityChecker } from '../seo-checks/accessibility-check.js';
 import { LighthouseChecker } from '../seo-checks/lighthouse-check.js';
 import { FaqChecker } from '../seo-checks/faq-check.js';
-import type { FaqAuditGroup, SeoAuditRow } from '../types/audit.js';
+import type { AuditParseResult, FaqAuditGroup, SeoAuditRow } from '../types/audit.js';
 import type { SeoCheckResult } from '../types/check-result.js';
 import type { RedirectResult } from '../types/redirect-result.js';
 import type { BrokenLinkResult } from '../types/broken-link-result.js';
@@ -113,12 +113,20 @@ export class AuditRunner {
 
   constructor(private readonly options: AuditRunnerOptions = {}) {}
 
-  async run(auditSheetPath: string): Promise<AuditRunResult> {
+  /**
+   * @param sheetSource  Either a path to the uploaded .xlsx/.csv (parsed
+   *   fresh), or an already-parsed AuditParseResult — passed when re-running
+   *   a previously-tested sheet against a fresh crawl of its URLs without
+   *   re-uploading the file (see the `/api/runs/rerun-sheet` route). Mirrors
+   *   BlogAuditRunner.run's `docxSource: string | BlogContent` parameter.
+   */
+  async run(sheetSource: string | AuditParseResult): Promise<AuditRunResult> {
     const startedAt = new Date();
-    const parseResult = await parseAuditSheet(auditSheetPath);
+    const parseResult = typeof sheetSource === 'string' ? await parseAuditSheet(sheetSource) : sheetSource;
 
     logger.info('Audit sheet parsed.', {
       sourcePath: parseResult.sourcePath,
+      reusedParsedContent: typeof sheetSource !== 'string',
       mode: parseResult.mode,
       rowCount: parseResult.rows.length,
       detectedColumns: parseResult.detectedColumns,
@@ -195,6 +203,7 @@ export class AuditRunner {
 
     return {
       sourcePath: parseResult.sourcePath,
+      expectedSheet: parseResult,
       totalRows: parseResult.mode === 'faq' ? faqRowCount : parseResult.rows.length,
       seoCheckResults,
       redirectResults,

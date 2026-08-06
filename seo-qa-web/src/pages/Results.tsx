@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Download, Bug, RotateCw, ArrowLeft, ExternalLink } from 'lucide-react';
-import { getRun, downloadUrl, devBugReportUrl, postRerunBatch, type AuditRecord } from '../lib/api';
+import { getRun, downloadUrl, devBugReportUrl, postRerunBatch, postRerunSheet, type AuditRecord } from '../lib/api';
 import AuditSummaryCards from '../components/AuditSummaryCards';
 import SeoResultsTable from '../components/SeoResultsTable';
 import StatusBadge from '../components/StatusBadge';
@@ -36,6 +36,20 @@ export default function Results() {
     try {
       const { batchId } = await postRerunBatch([record.id]);
       navigate(`/results/batch/${batchId}`);
+    } catch (e) {
+      setRerunError(e instanceof Error ? e.message : String(e));
+      setRerunning(false);
+    }
+  }
+
+  /** Sheet re-run runs synchronously (one shot, no batch/polling) — see postRerunSheet. */
+  async function handleSheetRerun() {
+    if (!record) return;
+    setRerunning(true);
+    setRerunError('');
+    try {
+      const result = await postRerunSheet(record.id);
+      navigate(`/results/${result.id}`);
     } catch (e) {
       setRerunError(e instanceof Error ? e.message : String(e));
       setRerunning(false);
@@ -89,7 +103,7 @@ export default function Results() {
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>{record.filename}</h1>
           {record.url && <div className="text-muted text-sm">{record.url}</div>}
         </div>
-        {isBlog && Boolean(record.expectedContent) && (
+        {Boolean(record.expectedContent) && (isBlog ? (
           <button
             className="btn btn-outline btn-sm"
             onClick={() => void handleRerun()}
@@ -98,7 +112,16 @@ export default function Results() {
           >
             <RotateCw size={14} /> {rerunning ? 'Starting…' : 'Re-run This Blog'}
           </button>
-        )}
+        ) : (
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => void handleSheetRerun()}
+            disabled={rerunning}
+            title="Re-test this sheet's URLs against a fresh crawl, without re-uploading the file."
+          >
+            <RotateCw size={14} /> {rerunning ? 'Running…' : 'Re-run This Sheet'}
+          </button>
+        ))}
         <a
           href={devBugReportUrl(record.id)}
           download={`bug-report-${record.id}.md`}

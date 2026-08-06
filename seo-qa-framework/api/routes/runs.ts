@@ -14,6 +14,7 @@ import { buildReportData } from '../../src/reports/report-data-builder.js';
 import { generateDevBugReport } from '../../src/reports/dev-bug-report-generator.js';
 import type { ReportData } from '../../src/types/report.js';
 import type { BlogContent } from '../../src/types/blog.js';
+import type { AuditParseResult } from '../../src/types/audit.js';
 import { parseAuditSheet } from '../../src/parsers/parser-factory.js';
 import { normalizeUrl } from '../../src/blog/url-normalizer.js';
 import { testConfig } from '../../src/config/test-config.js';
@@ -178,7 +179,10 @@ router.post(
         auditConfig,
         summary:  reportData.summary  as unknown as Record<string, unknown>,
         report:   reportData          as unknown as Record<string, unknown>,
-        expectedContent: result.expected as unknown as Record<string, unknown> | undefined,
+        // `result.expected` (BlogContent) for blog runs, `result.expectedSheet`
+        // (AuditParseResult) for sheet runs — see the AuditRunResult doc
+        // comments for why each is only ever set on its own run type.
+        expectedContent: (auditType === 'blog' ? result.expected : result.expectedSheet) as unknown as Record<string, unknown> | undefined,
       };
 
       await saveAuditRecord(record);
@@ -518,6 +522,81 @@ router.post('/rerun', async (req: Request, res: Response) => {
 
   void processBlogBatch(batchId, items);
 });
+
+/**
+ * POST /api/runs/rerun-sheet
+ * Re-runs a previously-tested sheet (.xlsx/.csv) audit against a fresh crawl
+ * of its URLs, WITHOUT re-uploading the file — reuses the parsed sheet
+ * content saved on the audit's history record (see
+ * AuditRecord.expectedContent). Unlike blog re-run, this runs synchronously
+ * and returns the same shape as POST /api/runs: a sheet audit is already a
+ * single one-shot run over (potentially many) URLs, not a batch of
+ * independent per-URL items, so there's no need for the blog batch/polling
+ * pipeline here.
+ * Body: { auditId: string }
+ */
+router.post(
+  '/rerun-sheet',
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async (req: Request, res: Response, _next: NextFunction) => {
+    const auditId = String(req.body?.auditId ?? '').trim();
+    if (!auditId) {
+      res.status(400).json({ error: 'auditId is required.' });
+      return;
+    }
+
+    const record = await getAuditRecord(auditId);
+    if (!record) {
+      res.status(404).json({ error: 'Audit not found.' });
+      return;
+    }
+    if (record.type !== 'sheet') {
+      res.status(400).json({ error: `"${record.filename}" is not a sheet audit.` });
+      return;
+    }
+    if (!record.expectedContent) {
+      res.status(400).json({
+        error: `"${record.filename}" was tested before re-running was supported — upload it once more to enable this.`
+      });
+      return;
+    }
+
+    const id = uuidv4();
+    try {
+      const runner = new AuditRunner();
+      const result = await runner.run(record.expectedContent as unknown as AuditParseResult);
+      const reportData = buildReportData(result);
+
+      await saveAuditRecord({
+        id,
+        type: 'sheet',
+        filename: record.filename,
+        url: record.url,
+        createdAt: result.startedAt,
+        status: 'completed',
+        summary: reportData.summary as unknown as Record<string, unknown>,
+        report: reportData as unknown as Record<string, unknown>,
+        expectedContent: result.expectedSheet as unknown as Record<string, unknown> | undefined,
+      });
+
+      res.json({
+        id, type: 'sheet', filename: record.filename,
+        createdAt: result.startedAt, summary: reportData.summary, report: reportData
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error('[runs] Sheet re-run failed', { auditId, message });
+
+      await saveAuditRecord({
+        id, type: 'sheet', filename: record.filename, url: record.url,
+        createdAt: new Date().toISOString(),
+        status: 'error', error: message, summary: {}, report: {},
+      });
+
+      res.status(500).json({ error: `Re-run failed: ${message}`, id });
+    }
+  }
+);
 
 // ── GET /api/runs/:id ─────────────────────────────────────────────────────────
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {

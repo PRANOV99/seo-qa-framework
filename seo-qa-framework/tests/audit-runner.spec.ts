@@ -102,6 +102,46 @@ test.describe('AuditRunner', () => {
     }
   });
 
+  test('re-runs against a fresh crawl using already-parsed AuditParseResult, with no sheet file at all', async () => {
+    // Mirrors the equivalent blog test ("re-runs against a fresh crawl using
+    // already-parsed BlogContent") — this is exactly the "re-run" code path:
+    // parse once, keep the result, discard/never touch the original file
+    // again, then run (possibly much later) purely from the kept
+    // AuditParseResult (see POST /api/runs/rerun-sheet).
+    const sheetDir = await mkdtemp(path.join(tmpdir(), 'audit-runner-rerun-test-'));
+    const sheetPath = path.join(sheetDir, 'audit.csv');
+
+    await writeFile(
+      sheetPath,
+      [
+        'Page URL,Problem,Expected Value',
+        `${baseUrl}/,Missing title,Home`,
+        `${baseUrl}/,Broken link audit,`
+      ].join('\n'),
+      'utf8'
+    );
+
+    let parsedResult;
+    try {
+      const runner = new AuditRunner({ baseUrl, captureScreenshotsOnFailure: false });
+      const firstRun = await runner.run(sheetPath);
+      parsedResult = firstRun.expectedSheet;
+    } finally {
+      await rm(sheetDir, { recursive: true, force: true });
+    }
+
+    expect(parsedResult).toBeDefined();
+
+    const runner = new AuditRunner({ baseUrl, captureScreenshotsOnFailure: false });
+    const rerun = await runner.run(parsedResult!);
+
+    expect(rerun.totalRows).toBe(2);
+    expect(rerun.seoCheckResults).toHaveLength(1);
+    expect(rerun.seoCheckResults[0]?.status).toBe('passed');
+    expect(rerun.brokenLinkResults).toHaveLength(2);
+    expect(rerun.expectedSheet).toBeDefined();
+  });
+
   test('marks checks as failed and skips broken-link scanning when navigation fails', async () => {
     const sheetDir = await mkdtemp(path.join(tmpdir(), 'audit-runner-test-'));
     const sheetPath = path.join(sheetDir, 'audit.csv');
