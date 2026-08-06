@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { listAuditRecords, getAuditRecord } from '../history-store.js';
+import { listAuditRecordSummaries, getAuditRecord } from '../history-store.js';
 import { generateDevBugReport } from '../../src/reports/dev-bug-report-generator.js';
 import type { ReportData } from '../../src/types/report.js';
 
@@ -11,22 +11,10 @@ const router = Router();
  */
 router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const records = await listAuditRecords();
-    // Return lightweight list without the full report payload
-    const list = records.map(r => ({
-      id: r.id,
-      type: r.type,
-      filename: r.filename,
-      url: r.url,
-      createdAt: r.createdAt,
-      status: r.status,
-      error: r.error,
-      summary: r.summary,
-      // Lets the UI show a "Re-run" option only for blog audits that were
-      // saved with their approved content — older records predating that
-      // feature can't be re-run without a fresh upload.
-      hasExpectedContent: Boolean(r.expectedContent),
-    }));
+    // Lightweight query — selects only what the History list renders, never
+    // the full `report`/`expected_content` JSONB payloads (see
+    // listAuditRecordSummaries' doc comment for why that matters).
+    const list = await listAuditRecordSummaries();
     res.json({ audits: list, total: list.length });
   } catch (error) {
     next(error);

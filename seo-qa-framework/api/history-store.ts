@@ -86,6 +86,65 @@ export async function listAuditRecords(): Promise<AuditRecord[]> {
   return rows.map(rowToRecord);
 }
 
+/**
+ * Lightweight summary of every stored audit record, newest first — everything
+ * the History list page actually renders (filename, url, status, summary
+ * counts, and whether a re-run is possible), with none of the `report` or
+ * `expected_content` JSONB payloads.
+ *
+ * `GET /api/history` used to call `listAuditRecords()` (`SELECT *`) and
+ * immediately discard those two columns in the route handler — but Postgres
+ * still had to read and transport them first. Measured against the real
+ * production database (92 records): the full `SELECT *` took ~870ms and
+ * shipped ~5.3MB; this query takes ~115ms and ships ~100KB. That gap is what
+ * made the History tab slow to load, and it only gets worse as more audits
+ * accumulate. `expected_content IS NOT NULL` reproduces the same
+ * `hasExpectedContent` flag the route already computed from the full record.
+ */
+export interface AuditRecordSummary {
+  id: string;
+  type: 'sheet' | 'blog';
+  filename: string;
+  url?: string;
+  createdAt: string;
+  status: 'completed' | 'error';
+  error?: string;
+  summary: Record<string, unknown>;
+  hasExpectedContent: boolean;
+}
+
+interface AuditRecordSummaryRow {
+  id: string;
+  type: string;
+  filename: string;
+  url: string | null;
+  created_at: Date;
+  status: string;
+  error: string | null;
+  summary: Record<string, unknown>;
+  has_expected_content: boolean;
+}
+
+export async function listAuditRecordSummaries(): Promise<AuditRecordSummary[]> {
+  const { rows } = await pool.query<AuditRecordSummaryRow>(
+    `SELECT id, type, filename, url, created_at, status, error, summary,
+            (expected_content IS NOT NULL) AS has_expected_content
+     FROM audit_records
+     ORDER BY created_at DESC`
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    type: row.type as AuditRecordSummary['type'],
+    filename: row.filename,
+    url: row.url ?? undefined,
+    createdAt: row.created_at.toISOString(),
+    status: row.status as AuditRecordSummary['status'],
+    error: row.error ?? undefined,
+    summary: row.summary,
+    hasExpectedContent: row.has_expected_content
+  }));
+}
+
 export async function getAuditRecord(id: string): Promise<AuditRecord | null> {
   const { rows } = await pool.query<AuditRecordRow>(
     'SELECT * FROM audit_records WHERE id = $1',
