@@ -25,6 +25,23 @@ export class LighthouseChecker {
         ]
       });
 
+      // chrome-launcher spawns Chrome as a raw child process and attaches no
+      // 'error' listener of its own (confirmed in its source) — a transient
+      // spawn failure (antivirus locking the freshly-written executable,
+      // momentary resource exhaustion, etc.) fires an 'error' event on that
+      // process asynchronously, AFTER launch() has already resolved. An
+      // EventEmitter 'error' with zero listeners crashes the entire Node
+      // process, not just this check — killing every other in-flight
+      // request on the server, not only this one. This listener converts
+      // that into an ordinary, per-call failure instead; the outer
+      // try/catch below already turns any error into a graceful result.
+      chrome.process?.on('error', (err) => {
+        logger.warn('Chrome child process emitted an error event during a Lighthouse audit.', {
+          url,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      });
+
       const runnerResult = await lighthouse(url, {
         port: chrome.port,
         output: 'json',

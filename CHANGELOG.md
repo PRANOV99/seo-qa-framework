@@ -6,6 +6,26 @@ kept in lockstep across `seo-qa-framework/package.json` and
 `seo-qa-web/package.json`: MAJOR = breaking change, MINOR = new feature,
 PATCH = bug fix.
 
+## [0.5.1] - 2026-08-06
+
+### Fixed
+- **Sheet audit upload failing with "Failed to fetch" mid-run.** Root
+  cause: `chrome-launcher` (used by the Lighthouse check) spawns Chrome as
+  a raw child process and attaches no `'error'` listener of its own
+  (confirmed in its source) — a transient spawn failure fires an `'error'`
+  event asynchronously, after `launch()` has already resolved, and an
+  `EventEmitter` `'error'` event with zero listeners crashes the *entire*
+  Node process, not just the one Lighthouse check. That kills every
+  in-flight request on the server, which is exactly what "Failed to fetch"
+  looks like from the browser — not a failure of the one audit that
+  triggered it. Fixed at the source (`chrome.process?.on('error', ...)` in
+  `lighthouse-check.ts`, right after `chromeLauncher.launch()` resolves),
+  plus added global `process.on('uncaughtException'/'unhandledRejection')`
+  handlers in `server.ts` as a defense-in-depth backstop — verified the
+  underlying Node.js crash mechanism directly (an unlistened child-process
+  `'error'` event reliably crashes a bare Node process; attaching a
+  listener reliably prevents it) and locked that in as a regression test.
+
 ## [0.5.0] - 2026-08-06
 
 ### Added

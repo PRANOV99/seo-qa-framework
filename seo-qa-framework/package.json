@@ -1,6 +1,6 @@
 {
   "name": "seo-qa-framework",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Production-ready SEO QA automation framework using Playwright and TypeScript.",
   "private": true,
   "type": "module",

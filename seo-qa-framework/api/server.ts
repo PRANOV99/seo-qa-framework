@@ -9,6 +9,34 @@ import compareRouter from './routes/compare.js';
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
+// ── Crash safety net ─────────────────────────────────────────────────────────
+// An audit run spawns external processes (Playwright's browser, Lighthouse's
+// chrome-launcher) that can occasionally throw or reject completely outside
+// the request's own try/catch (e.g. an EventEmitter 'error' event on a child
+// process with no listener of its own — Node crashes the whole process for
+// that regardless of any surrounding try/catch, since it isn't a normal
+// promise rejection). Without a handler here, ONE bad audit takes the entire
+// server down, dropping every other in-flight/future request until something
+// restarts it — that's a "Failed to fetch" for every user, not just the one
+// whose request actually failed. This is deliberately narrow: log and keep
+// the process alive, rather than the (correctly) more cautious general advice
+// to always exit on an uncaught exception — the specific failure mode this
+// guards against is well-understood and isolated to one external process,
+// not shared server state (the HTTP listener, the DB pool, in-memory stores).
+process.on('uncaughtException', (error) => {
+  logger.error('[API] Uncaught exception — the server is staying up, but the request that triggered this may have failed.', {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('[API] Unhandled promise rejection — the server is staying up, but the request that triggered this may have failed.', {
+    message: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined
+  });
+});
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean);
 
