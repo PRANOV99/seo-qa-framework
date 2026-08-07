@@ -155,6 +155,37 @@ describe('groupFaqRows', () => {
 
     assert.equal(faqGroups[0]?.faqs.length, 2, 'Only Q1 and Q2 count; the question-only divider row is dropped.');
   });
+
+  it('merges two differently-labelled blocks into one group when their hyperlinks both point to the same URL', () => {
+    // Reproduces a real sheet-authoring mistake found in production: two
+    // DIFFERENT blog post labels ("Blog A" and "Blog B") had their
+    // hyperlinks both mistakenly set to the same live page. Checking them
+    // as two separate groups would visit that one page twice, and each
+    // run's own "extra" detection would see the OTHER group's questions as
+    // unexplained content — every real question reported twice, once
+    // correctly and once as a phantom duplicate "(extra)". Merging into one
+    // group up front means the page is checked once against the full
+    // combined expected set instead.
+    const { faqGroups } = groupFaqRows([
+      row({ urlText: 'Blog A', urlHyperlink: 'https://example.com/shared-page', question: 'Q1', answer: 'A1', sourceRowNumber: 2 }),
+      row({ sourceRowNumber: 3 }), // blank separator between the two blocks
+      row({ urlText: 'Blog B', urlHyperlink: 'https://example.com/shared-page', question: 'Q2', answer: 'A2', sourceRowNumber: 5 })
+    ]);
+
+    assert.equal(faqGroups.length, 1, 'Both blocks resolve to the same URL, so they must merge into one group, not two.');
+    assert.equal(faqGroups[0]?.url, 'https://example.com/shared-page');
+    assert.deepEqual(faqGroups[0]?.faqs.map((f) => f.question), ['Q1', 'Q2']);
+  });
+
+  it('does NOT merge two different URLs, even with similar labels', () => {
+    const { faqGroups } = groupFaqRows([
+      row({ urlText: 'Blog A', urlHyperlink: 'https://example.com/page-a', question: 'Q1', answer: 'A1', sourceRowNumber: 2 }),
+      row({ sourceRowNumber: 3 }),
+      row({ urlText: 'Blog B', urlHyperlink: 'https://example.com/page-b', question: 'Q2', answer: 'A2', sourceRowNumber: 5 })
+    ]);
+
+    assert.equal(faqGroups.length, 2);
+  });
 });
 
 describe('tryParseFaqCsv', () => {

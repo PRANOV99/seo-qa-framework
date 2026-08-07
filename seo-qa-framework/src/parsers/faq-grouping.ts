@@ -91,7 +91,37 @@ export function groupFaqRows(rows: readonly RawFaqRow[]): FaqGroupingResult {
     unresolvedFaqGroups.push(...blockUnresolved);
   }
 
-  return { faqGroups, unresolvedFaqGroups };
+  return { faqGroups: mergeGroupsBySameUrl(faqGroups), unresolvedFaqGroups };
+}
+
+/**
+ * Merges any two (or more) resolved groups that ended up pointing at the
+ * exact same URL into one, concatenating their questions. Confirmed
+ * against a real sheet: two DIFFERENT blog-post labels ("Why Living with
+ * Fewer Neighbors..." and "Low-Density Living: The New Luxury...") had
+ * their hyperlinks both mistakenly set to the same target page. Checking
+ * them as two separate groups visits that one live page twice, and each
+ * run's OWN unmatched-item detection sees the OTHER group's questions as
+ * "extra" — so every real question gets reported twice (once correctly,
+ * once as a phantom "(extra)" duplicate). There is only one live page to
+ * check either way, so its "extra" content is only meaningful relative to
+ * the FULL combined set of everything the sheet expects there.
+ */
+function mergeGroupsBySameUrl(groups: readonly FaqAuditGroup[]): FaqAuditGroup[] {
+  const byUrl = new Map<string, FaqAuditGroup>();
+  const order: string[] = [];
+
+  for (const group of groups) {
+    const existing = byUrl.get(group.url);
+    if (existing) {
+      existing.faqs.push(...group.faqs);
+      continue;
+    }
+    byUrl.set(group.url, { ...group, faqs: [...group.faqs] });
+    order.push(group.url);
+  }
+
+  return order.map((url) => byUrl.get(url)!);
 }
 
 function groupBlock(block: readonly RawFaqRow[]): FaqGroupingResult {
